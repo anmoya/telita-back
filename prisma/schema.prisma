@@ -1,0 +1,478 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  superadmin
+  admin
+  operador
+}
+
+enum SaleStatus {
+  DRAFT
+  CONFIRMED
+  CANCELED
+}
+
+enum PriceMethod {
+  LINEAR_METER
+  AREA
+  FIXED
+}
+
+enum CutJobStatus {
+  PENDING
+  IN_PROGRESS
+  CUT
+  DELIVERED
+}
+
+enum ScrapStatus {
+  PENDING_CLASSIFICATION
+  DISCARDED
+  PENDING_STORAGE
+  STORED
+  USED
+}
+
+enum LabelType {
+  SALE_CUT
+  SCRAP
+}
+
+enum LabelCodeType {
+  QR
+}
+
+enum PrintFormat {
+  A4
+}
+
+enum PrintChannel {
+  BROWSER
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  STATUS_CHANGE
+  PRINT
+}
+
+model Brand {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @unique @db.VarChar(120)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  branches Branch[]
+
+  @@map("brand")
+}
+
+model Branch {
+  id        String   @id @default(uuid()) @db.Uuid
+  brandId   String?  @map("brand_id") @db.Uuid
+  code      String   @unique @db.VarChar(30)
+  name      String   @db.VarChar(120)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  brand            Brand?            @relation(fields: [brandId], references: [id])
+  users            AppUser[]
+  skus             FabricSku[]
+  priceLists       PriceList[]
+  sales            Sale[]
+  quotes           Quote[]
+  storageLocations StorageLocation[]
+  scraps           Scrap[]
+  labels           Label[]
+  auditLogs        AuditLog[]
+
+  @@map("branch")
+}
+
+model AppUser {
+  id           String   @id @default(uuid()) @db.Uuid
+  branchId     String   @map("branch_id") @db.Uuid
+  email        String   @unique @db.VarChar(160)
+  fullName     String   @map("full_name") @db.VarChar(160)
+  role         UserRole
+  passwordHash String   @map("password_hash")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  branch                     Branch             @relation(fields: [branchId], references: [id])
+  sales                      Sale[]             @relation("SaleCreatedBy")
+  quotes                     Quote[]            @relation("QuoteCreatedBy")
+  cutJobs                    CutJob[]           @relation("CutJobCutBy")
+  scrapsGenerated            Scrap[]            @relation("ScrapGeneratedBy")
+  scrapsClassified           Scrap[]            @relation("ScrapClassifiedBy")
+  storageLocationsCreated    StorageLocation[]  @relation("StorageLocationCreatedBy")
+  labelsCreated              Label[]            @relation("LabelCreatedBy")
+  labelPrintEvents           LabelPrintEvent[]  @relation("LabelPrintBy")
+  settingsUpdated            SystemSetting[]    @relation("SystemSettingUpdatedBy")
+  auditLogs                  AuditLog[]         @relation("AuditActor")
+  scrapAllocations           SaleLineScrapAllocation[] @relation("AllocationAllocatedBy")
+
+  @@map("app_user")
+}
+
+model UnitLength {
+  id            Int      @id @default(autoincrement()) @db.SmallInt
+  code          String   @unique @db.VarChar(10)
+  name          String   @db.VarChar(40)
+  toMeterFactor Decimal  @map("to_meter_factor") @db.Decimal(12, 6)
+
+  skusAsLength    FabricSku[] @relation("SkuLengthUnit")
+  skusAsWidth     FabricSku[] @relation("SkuWidthUnit")
+  skusAsThickness FabricSku[] @relation("SkuThicknessUnit")
+
+  @@map("unit_length")
+}
+
+model UnitWeight {
+  id         Int      @id @default(autoincrement()) @db.SmallInt
+  code       String   @unique @db.VarChar(10)
+  name       String   @db.VarChar(40)
+  toKgFactor Decimal  @map("to_kg_factor") @db.Decimal(12, 6)
+
+  skus FabricSku[]
+
+  @@map("unit_weight")
+}
+
+model FabricSku {
+  id              String   @id @default(uuid()) @db.Uuid
+  branchId        String   @map("branch_id") @db.Uuid
+  code            String   @db.VarChar(60)
+  name            String   @db.VarChar(160)
+  description     String?
+  lengthValue     Decimal  @map("length_value") @db.Decimal(12, 3)
+  lengthUnitId    Int      @map("length_unit_id") @db.SmallInt
+  widthValue      Decimal  @map("width_value") @db.Decimal(12, 3)
+  widthUnitId     Int      @map("width_unit_id") @db.SmallInt
+  thicknessValue  Decimal  @map("thickness_value") @db.Decimal(12, 3)
+  thicknessUnitId Int      @map("thickness_unit_id") @db.SmallInt
+  weightValue     Decimal  @map("weight_value") @db.Decimal(12, 3)
+  weightUnitId    Int      @map("weight_unit_id") @db.SmallInt
+  isActive        Boolean  @default(true) @map("is_active")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  branch        Branch       @relation(fields: [branchId], references: [id])
+  lengthUnit    UnitLength   @relation("SkuLengthUnit", fields: [lengthUnitId], references: [id])
+  widthUnit     UnitLength   @relation("SkuWidthUnit", fields: [widthUnitId], references: [id])
+  thicknessUnit UnitLength   @relation("SkuThicknessUnit", fields: [thicknessUnitId], references: [id])
+  weightUnit    UnitWeight   @relation(fields: [weightUnitId], references: [id])
+  priceItems    PriceListItem[]
+  saleLines     SaleLine[]
+  quotes        Quote[]
+  scraps        Scrap[]
+
+  @@unique([branchId, code])
+  @@map("fabric_sku")
+}
+
+model Currency {
+  code     String  @id @db.Char(3)
+  name     String  @db.VarChar(50)
+  isActive Boolean @default(true) @map("is_active")
+
+  priceLists PriceList[]
+  sales      Sale[]
+  quotes     Quote[]
+
+  @@map("currency")
+}
+
+model Tax {
+  id          String   @id @default(uuid()) @db.Uuid
+  code        String   @unique @db.VarChar(30)
+  name        String   @db.VarChar(80)
+  ratePct     Decimal  @map("rate_pct") @db.Decimal(6, 3)
+  isMandatory Boolean  @default(true) @map("is_mandatory")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("tax")
+}
+
+model SystemSetting {
+  key       String   @id @db.VarChar(80)
+  valueJson Json     @map("value_json")
+  updatedBy String   @map("updated_by") @db.Uuid
+  updatedAt DateTime @map("updated_at") @db.Timestamptz(6)
+
+  updatedByUser AppUser @relation("SystemSettingUpdatedBy", fields: [updatedBy], references: [id])
+
+  @@map("system_setting")
+}
+
+model PriceList {
+  id           String   @id @default(uuid()) @db.Uuid
+  branchId     String   @map("branch_id") @db.Uuid
+  name         String   @db.VarChar(120)
+  currencyCode String   @map("currency_code") @db.Char(3)
+  validFrom    DateTime @map("valid_from") @db.Date
+  validTo      DateTime? @map("valid_to") @db.Date
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  branch   Branch    @relation(fields: [branchId], references: [id])
+  currency Currency  @relation(fields: [currencyCode], references: [code])
+  items    PriceListItem[]
+  sales    Sale[]
+  quotes   Quote[]
+
+  @@map("price_list")
+}
+
+model PriceListItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  priceListId String   @map("price_list_id") @db.Uuid
+  skuId       String   @map("sku_id") @db.Uuid
+  basePrice   Decimal  @map("base_price") @db.Decimal(14, 2)
+  discountPct Decimal  @default(0) @map("discount_pct") @db.Decimal(5, 2)
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  priceList PriceList @relation(fields: [priceListId], references: [id])
+  sku       FabricSku @relation(fields: [skuId], references: [id])
+
+  @@unique([priceListId, skuId])
+  @@map("price_list_item")
+}
+
+model Quote {
+  id               String   @id @default(uuid()) @db.Uuid
+  branchId         String   @map("branch_id") @db.Uuid
+  createdBy        String   @map("created_by") @db.Uuid
+  skuId            String   @map("sku_id") @db.Uuid
+  priceListId      String   @map("price_list_id") @db.Uuid
+  currencyCode     String   @map("currency_code") @db.Char(3)
+  requestedWidthM  Decimal  @map("requested_width_m") @db.Decimal(12, 3)
+  requestedHeightM Decimal  @map("requested_height_m") @db.Decimal(12, 3)
+  quantity         Int
+  unitPrice        Decimal  @map("unit_price") @db.Decimal(14, 2)
+  linearMeters     Decimal  @map("linear_meters") @db.Decimal(12, 3)
+  subtotalAmount   Decimal  @map("subtotal_amount") @db.Decimal(14, 2)
+  totalRounded     Decimal  @map("total_rounded") @db.Decimal(14, 2)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  branch        Branch    @relation(fields: [branchId], references: [id])
+  createdByUser AppUser   @relation("QuoteCreatedBy", fields: [createdBy], references: [id])
+  sku           FabricSku @relation(fields: [skuId], references: [id])
+  priceList     PriceList @relation(fields: [priceListId], references: [id])
+  currency      Currency  @relation(fields: [currencyCode], references: [code])
+  scraps        Scrap[]
+  labels        Label[]
+
+  @@index([branchId, createdAt])
+  @@map("quote")
+}
+
+model Sale {
+  id              String    @id @default(uuid()) @db.Uuid
+  branchId        String    @map("branch_id") @db.Uuid
+  createdBy       String    @map("created_by") @db.Uuid
+  customerName    String?   @map("customer_name") @db.VarChar(160)
+  customerReference String? @map("customer_reference") @db.VarChar(120)
+  status          SaleStatus
+  priceListId     String    @map("price_list_id") @db.Uuid
+  currencyCode    String    @map("currency_code") @db.Char(3)
+  subtotalAmount  Decimal   @default(0) @map("subtotal_amount") @db.Decimal(14, 2)
+  taxAmount       Decimal   @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  totalAmount     Decimal   @default(0) @map("total_amount") @db.Decimal(14, 2)
+  canceledReason  String?   @map("canceled_reason")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  branch      Branch    @relation(fields: [branchId], references: [id])
+  createdByUser AppUser @relation("SaleCreatedBy", fields: [createdBy], references: [id])
+  priceList   PriceList @relation(fields: [priceListId], references: [id])
+  currency    Currency  @relation(fields: [currencyCode], references: [code])
+  lines       SaleLine[]
+
+  @@index([branchId, status, createdAt])
+  @@map("sale")
+}
+
+model SaleLine {
+  id               String    @id @default(uuid()) @db.Uuid
+  saleId           String    @map("sale_id") @db.Uuid
+  skuId            String    @map("sku_id") @db.Uuid
+  requestedWidthM  Decimal   @map("requested_width_m") @db.Decimal(12, 3)
+  requestedHeightM Decimal   @map("requested_height_m") @db.Decimal(12, 3)
+  quantity         Int
+  priceMethod      PriceMethod @map("price_method")
+  unitPrice        Decimal   @map("unit_price") @db.Decimal(14, 2)
+  discountPct      Decimal   @default(0) @map("discount_pct") @db.Decimal(5, 2)
+  lineSubtotal     Decimal   @map("line_subtotal") @db.Decimal(14, 2)
+  lineTotal        Decimal   @map("line_total") @db.Decimal(14, 2)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  sale        Sale      @relation(fields: [saleId], references: [id])
+  sku         FabricSku @relation(fields: [skuId], references: [id])
+  cutJobs     CutJob[]
+  scraps      Scrap[]
+  labels      Label[]
+  allocations SaleLineScrapAllocation[]
+
+  @@index([saleId])
+  @@map("sale_line")
+}
+
+model CutJob {
+  id         String      @id @default(uuid()) @db.Uuid
+  saleLineId String      @map("sale_line_id") @db.Uuid
+  status     CutJobStatus
+  cutBy      String?     @map("cut_by") @db.Uuid
+  cutAt      DateTime?   @map("cut_at") @db.Timestamptz(6)
+  createdAt  DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  saleLine SaleLine @relation(fields: [saleLineId], references: [id])
+  cutByUser AppUser? @relation("CutJobCutBy", fields: [cutBy], references: [id])
+  scraps   Scrap[]
+
+  @@index([status, cutAt])
+  @@map("cut_job")
+}
+
+model StorageLocation {
+  id          String    @id @default(uuid()) @db.Uuid
+  branchId    String    @map("branch_id") @db.Uuid
+  code        String    @db.VarChar(20)
+  description String?   @db.VarChar(160)
+  isActive    Boolean   @default(true) @map("is_active")
+  createdBy   String    @map("created_by") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  branch        Branch   @relation(fields: [branchId], references: [id])
+  createdByUser AppUser  @relation("StorageLocationCreatedBy", fields: [createdBy], references: [id])
+  scraps        Scrap[]
+
+  @@unique([branchId, code])
+  @@map("storage_location")
+}
+
+model Scrap {
+  id            String      @id @default(uuid()) @db.Uuid
+  branchId      String      @map("branch_id") @db.Uuid
+  skuId         String      @map("sku_id") @db.Uuid
+  quoteId       String?     @map("quote_id") @db.Uuid
+  saleLineId    String?     @map("sale_line_id") @db.Uuid
+  cutJobId      String?     @map("cut_job_id") @db.Uuid
+  widthM        Decimal     @map("width_m") @db.Decimal(12, 3)
+  heightM       Decimal     @map("height_m") @db.Decimal(12, 3)
+  areaM2        Decimal     @map("area_m2") @db.Decimal(12, 3)
+  status        ScrapStatus
+  locationId    String?     @map("location_id") @db.Uuid
+  generatedBy   String      @map("generated_by") @db.Uuid
+  classifiedBy  String?     @map("classified_by") @db.Uuid
+  classifiedAt  DateTime?   @map("classified_at") @db.Timestamptz(6)
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  branch            Branch           @relation(fields: [branchId], references: [id])
+  sku               FabricSku        @relation(fields: [skuId], references: [id])
+  quote             Quote?           @relation(fields: [quoteId], references: [id])
+  saleLine          SaleLine?        @relation(fields: [saleLineId], references: [id])
+  cutJob            CutJob?          @relation(fields: [cutJobId], references: [id])
+  location          StorageLocation? @relation(fields: [locationId], references: [id])
+  generatedByUser   AppUser          @relation("ScrapGeneratedBy", fields: [generatedBy], references: [id])
+  classifiedByUser  AppUser?         @relation("ScrapClassifiedBy", fields: [classifiedBy], references: [id])
+  labels            Label[]
+  allocations       SaleLineScrapAllocation[]
+
+  @@index([branchId, status, skuId])
+  @@index([locationId])
+  @@map("scrap")
+}
+
+model Label {
+  id          String        @id @default(uuid()) @db.Uuid
+  branchId    String        @map("branch_id") @db.Uuid
+  type        LabelType
+  quoteId     String?       @map("quote_id") @db.Uuid
+  saleLineId  String?       @map("sale_line_id") @db.Uuid
+  scrapId     String?       @map("scrap_id") @db.Uuid
+  payloadJson Json          @map("payload_json")
+  codeType    LabelCodeType @default(QR) @map("code_type")
+  printFormat PrintFormat   @default(A4) @map("print_format")
+  createdBy   String        @map("created_by") @db.Uuid
+  createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  branch        Branch       @relation(fields: [branchId], references: [id])
+  quote         Quote?       @relation(fields: [quoteId], references: [id])
+  saleLine      SaleLine?    @relation(fields: [saleLineId], references: [id])
+  scrap         Scrap?       @relation(fields: [scrapId], references: [id])
+  createdByUser AppUser      @relation("LabelCreatedBy", fields: [createdBy], references: [id])
+  printEvents   LabelPrintEvent[]
+
+  @@index([type, createdAt])
+  @@map("label")
+}
+
+model LabelPrintEvent {
+  id        String       @id @default(uuid()) @db.Uuid
+  labelId   String       @map("label_id") @db.Uuid
+  printedBy String       @map("printed_by") @db.Uuid
+  printedAt DateTime     @map("printed_at") @db.Timestamptz(6)
+  channel   PrintChannel
+
+  label         Label   @relation(fields: [labelId], references: [id])
+  printedByUser AppUser @relation("LabelPrintBy", fields: [printedBy], references: [id])
+
+  @@map("label_print_event")
+}
+
+model SaleLineScrapAllocation {
+  id          String    @id @default(uuid()) @db.Uuid
+  saleLineId  String    @map("sale_line_id") @db.Uuid
+  scrapId     String    @map("scrap_id") @db.Uuid
+  allocatedBy String    @map("allocated_by") @db.Uuid
+  allocatedAt DateTime  @map("allocated_at") @db.Timestamptz(6)
+  releasedAt  DateTime? @map("released_at") @db.Timestamptz(6)
+  isActive    Boolean   @default(true) @map("is_active")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  saleLine        SaleLine  @relation(fields: [saleLineId], references: [id])
+  scrap           Scrap     @relation(fields: [scrapId], references: [id])
+  allocatedByUser AppUser   @relation("AllocationAllocatedBy", fields: [allocatedBy], references: [id])
+
+  @@index([saleLineId])
+  @@index([scrapId])
+  @@map("sale_line_scrap_allocation")
+}
+
+model AuditLog {
+  id          String      @id @default(uuid()) @db.Uuid
+  branchId    String?     @map("branch_id") @db.Uuid
+  actorUserId String      @map("actor_user_id") @db.Uuid
+  entityType  String      @map("entity_type") @db.VarChar(60)
+  entityId    String      @map("entity_id") @db.Uuid
+  action      AuditAction
+  beforeJson  Json?       @map("before_json")
+  afterJson   Json?       @map("after_json")
+  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  branch Branch? @relation(fields: [branchId], references: [id])
+  actor  AppUser @relation("AuditActor", fields: [actorUserId], references: [id])
+
+  @@index([entityType, entityId, createdAt])
+  @@map("audit_log")
+}
