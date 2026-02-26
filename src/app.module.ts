@@ -14,9 +14,11 @@ import { DashboardController } from "./modules/dashboard/presentation/controller
 import { SettingsController } from "./modules/settings/presentation/controllers/settings.controller";
 import { UsersController } from "./modules/users/presentation/controllers/users.controller";
 import { StatusLabelsController } from "./modules/status-labels/presentation/controllers/status-labels.controller";
+import { BranchesController } from "./modules/branches/presentation/controllers/branches.controller";
 
 import { GetStatusLabelsUseCase } from "./modules/status-labels/application/use-cases/get-status-labels.use-case";
 import { PrismaStatusLabelRepository } from "./modules/status-labels/infrastructure/persistence/prisma/prisma-status-label.repository";
+import { PrismaBranchRepository } from "./modules/branches/infrastructure/persistence/prisma/prisma-branch.repository";
 
 @Module({
   controllers: [
@@ -34,11 +36,13 @@ import { PrismaStatusLabelRepository } from "./modules/status-labels/infrastruct
     DashboardController,
     SettingsController,
     UsersController,
-    StatusLabelsController
+    StatusLabelsController,
+    BranchesController
   ],
   providers: [
     GetStatusLabelsUseCase,
-    PrismaStatusLabelRepository
+    PrismaStatusLabelRepository,
+    PrismaBranchRepository
   ]
 })
 export class AppModule {}
