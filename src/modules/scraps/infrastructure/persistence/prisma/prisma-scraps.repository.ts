@@ -254,6 +254,23 @@ export class PrismaScrapsRepository {
     const user = await prismaClient.appUser.findUnique({ where: { email: input.createdByEmail } });
     if (!branch || !user) throw new Error("Branch/user not found.");
 
+    // Validate code format: alphanumeric + hyphen only
+    if (!/^[A-Za-z0-9-]+$/.test(input.code)) {
+      throw new Error("Code must be alphanumeric with hyphens only");
+    }
+    if (input.code.length > 20) {
+      throw new Error("Code must be at most 20 characters");
+    }
+    if (input.description && input.description.length > 160) {
+      throw new Error("Description must be at most 160 characters");
+    }
+
+    // Check unique code per branch
+    const existing = await prismaClient.storageLocation.findFirst({
+      where: { branchId: branch.id, code: input.code }
+    });
+    if (existing) throw new Error("Code already exists in this branch");
+
     const location = await prismaClient.storageLocation.create({
       data: {
         branchId: branch.id,
@@ -271,6 +288,163 @@ export class PrismaScrapsRepository {
       afterJson: { code: location.code, description: location.description ?? null }
     });
     return location;
+  }
+
+  async listStorageLocations(branchCode: string) {
+    const branch = await prismaClient.branch.findUnique({ where: { code: branchCode } });
+    if (!branch) return [];
+
+    const locations = await prismaClient.storageLocation.findMany({
+      where: { branchId: branch.id },
+      include: {
+        _count: {
+          select: {
+            scraps: {
+              where: {
+                status: {
+                  in: [
+                    ScrapStatus.PENDING_CLASSIFICATION,
+                    ScrapStatus.PENDING_STORAGE,
+                    ScrapStatus.STORED
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      orderBy: { code: "asc" }
+    });
+
+    return locations.map((loc) => ({
+      id: loc.id,
+      code: loc.code,
+      description: loc.description,
+      isActive: loc.isActive,
+      scrapCountStored: loc._count.scraps,
+      canDelete: loc._count.scraps === 0 && loc.isActive
+    }));
+  }
+
+  async updateStorageLocation(id: string, input: { code?: string; description?: string; actorEmail: string }) {
+    const existing = await prismaClient.storageLocation.findUnique({
+      where: { id },
+      include: { scraps: { where: { status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.STORED] } } } }
+    });
+    if (!existing) throw new Error("Location not found.");
+
+    const user = await prismaClient.appUser.findUnique({ where: { email: input.actorEmail } });
+    if (!user) throw new Error("User not found.");
+
+    // Validate code if changing
+    if (input.code && input.code !== existing.code) {
+      if (existing.scraps.length > 0) {
+        throw new Error("Cannot change code: location has active stock");
+      }
+      if (!/^[A-Za-z0-9-]+$/.test(input.code)) {
+        throw new Error("Code must be alphanumeric with hyphens only");
+      }
+      if (input.code.length > 20) {
+        throw new Error("Code must be at most 20 characters");
+      }
+      // Check unique
+      const duplicate = await prismaClient.storageLocation.findFirst({
+        where: { branchId: existing.branchId, code: input.code }
+      });
+      if (duplicate) throw new Error("Code already exists in this branch");
+    }
+
+    if (input.description !== undefined && input.description.length > 160) {
+      throw new Error("Description must be at most 160 characters");
+    }
+
+    const updated = await prismaClient.storageLocation.update({
+      where: { id },
+      data: {
+        code: input.code ?? existing.code,
+        description: input.description !== undefined ? input.description : existing.description
+      }
+    });
+
+    await this.auditRepo.log({
+      branchId: existing.branchId,
+      actorUserId: user.id,
+      entityType: "storage_location",
+      entityId: id,
+      action: AuditAction.UPDATE,
+      beforeJson: { code: existing.code, description: existing.description },
+      afterJson: { code: updated.code, description: updated.description }
+    });
+
+    return updated;
+  }
+
+  async deleteStorageLocation(id: string, actorEmail: string) {
+    const existing = await prismaClient.storageLocation.findUnique({
+      where: { id },
+      include: { scraps: { where: { status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.STORED] } } } }
+    });
+    if (!existing) throw new Error("Location not found.");
+
+    if (existing.scraps.length > 0) {
+      throw new Error("Cannot delete: location has active stock");
+    }
+
+    const user = await prismaClient.appUser.findUnique({ where: { email: actorEmail } });
+    if (!user) throw new Error("User not found.");
+
+    await prismaClient.storageLocation.delete({ where: { id } });
+
+    await this.auditRepo.log({
+      branchId: existing.branchId,
+      actorUserId: user.id,
+      entityType: "storage_location",
+      entityId: id,
+      action: AuditAction.DELETE,
+      beforeJson: { code: existing.code, description: existing.description }
+    });
+  }
+
+  async toggleStorageLocationStatus(id: string, actorEmail: string) {
+    const existing = await prismaClient.storageLocation.findUnique({
+      where: { id }
+    });
+    if (!existing) throw new Error("Location not found.");
+
+    const user = await prismaClient.appUser.findUnique({ where: { email: actorEmail } });
+    if (!user) throw new Error("User not found.");
+
+    const newStatus = !existing.isActive;
+
+    // If deactivating, check for active stock
+    if (newStatus === false) {
+      const activeCount = await prismaClient.scrap.count({
+        where: {
+          locationId: id,
+          status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.STORED] }
+        }
+      });
+      if (activeCount > 0) {
+        throw new Error("Cannot deactivate: location has active stock");
+      }
+    }
+
+    const updated = await prismaClient.storageLocation.update({
+      where: { id },
+      data: { isActive: newStatus }
+    });
+
+    await this.auditRepo.log({
+      branchId: existing.branchId,
+      actorUserId: user.id,
+      entityType: "storage_location",
+      entityId: id,
+      action: AuditAction.STATUS_CHANGE,
+      beforeJson: { isActive: existing.isActive },
+      afterJson: { isActive: newStatus }
+    });
+
+    return updated;
   }
 
   async assignLocation(input: { scrapId: string; locationCode: string; classifiedByEmail: string }) {

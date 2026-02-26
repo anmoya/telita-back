@@ -1,8 +1,10 @@
 import { PrismaClient, UserRole } from "@prisma/client";
+import * as bcrypt from "bcrypt";
 
 const prisma = new PrismaClient();
 
 async function main() {
+  const defaultPasswordHash = await bcrypt.hash("dev_only_change_me", 12);
   const brand = await prisma.brand.upsert({
     where: { name: "Default Brand" },
     create: { name: "Default Brand" },
@@ -26,9 +28,9 @@ async function main() {
       email: "admin@telita.local",
       fullName: "Administrador",
       role: UserRole.superadmin,
-      passwordHash: "dev_only_change_me"
+      passwordHash: defaultPasswordHash
     },
-    update: {}
+    update: { passwordHash: defaultPasswordHash }
   });
 
   await prisma.appUser.upsert({
@@ -38,12 +40,13 @@ async function main() {
       email: "operador@telita.local",
       fullName: "Operador",
       role: UserRole.operador,
-      passwordHash: "dev_only_change_me"
+      passwordHash: defaultPasswordHash
     },
     update: {
       branchId: branch.id,
       fullName: "Operador",
-      role: UserRole.operador
+      role: UserRole.operador,
+      passwordHash: defaultPasswordHash
     }
   });
 
@@ -299,6 +302,33 @@ async function main() {
       updatedAt: new Date()
     }
   });
+
+  // Seed status labels (Spec-23)
+  const statusLabelsData = [
+    // Sale statuses
+    { entityType: "sale", statusCode: "DRAFT", labelEs: "Borrador", descriptionEs: "Cotización en preparación, aún no confirmada ni enviada al taller." },
+    { entityType: "sale", statusCode: "CONFIRMED", labelEs: "Confirmada", descriptionEs: "Venta confirmada. Se han generado los trabajos de corte." },
+    { entityType: "sale", statusCode: "CANCELED", labelEs: "Anulada", descriptionEs: "Venta cancelada. No genera corte ni movimiento de stock." },
+    // CutJob statuses
+    { entityType: "cut_job", statusCode: "PENDING", labelEs: "Pendiente", descriptionEs: "El corte fue programado y está en espera de ejecución." },
+    { entityType: "cut_job", statusCode: "IN_PROGRESS", labelEs: "En progreso", descriptionEs: "El corte está siendo ejecutado por el operador." },
+    { entityType: "cut_job", statusCode: "CUT", labelEs: "Cortado", descriptionEs: "El corte fue ejecutado. Se puede haber generado un retazo." },
+    { entityType: "cut_job", statusCode: "DELIVERED", labelEs: "Entregado", descriptionEs: "El corte fue entregado al cliente o despachado." },
+    // Scrap statuses
+    { entityType: "scrap", statusCode: "PENDING_CLASSIFICATION", labelEs: "Por clasificar", descriptionEs: "Retazo generado, aún no determinado si es útil o descarte." },
+    { entityType: "scrap", statusCode: "DISCARDED", labelEs: "Descartado", descriptionEs: "Retazo pequeño, no apto para reutilización." },
+    { entityType: "scrap", statusCode: "PENDING_STORAGE", labelEs: "Por almacenar", descriptionEs: "Retazo útil sin ubicación asignada aún." },
+    { entityType: "scrap", statusCode: "STORED", labelEs: "Almacenado", descriptionEs: "Retazo disponible para uso en una venta futura." },
+    { entityType: "scrap", statusCode: "USED", labelEs: "Utilizado", descriptionEs: "Retazo consumido en una venta." }
+  ];
+
+  for (const label of statusLabelsData) {
+    await prisma.statusLabel.upsert({
+      where: { entityType_statusCode: { entityType: label.entityType, statusCode: label.statusCode } },
+      create: label,
+      update: label
+    });
+  }
 
   console.log("Seed completado");
 }

@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { HealthController } from "./health.controller";
 import { AuthController } from "./modules/auth/presentation/controllers/auth.controller";
 import { PricingController } from "./modules/pricing/presentation/controllers/pricing.controller";
+import { PriceListsController } from "./modules/pricing/presentation/controllers/price-lists.controller";
 import { CatalogController } from "./modules/catalog/presentation/controllers/catalog.controller";
 import { SalesController } from "./modules/sales/presentation/controllers/sales.controller";
 import { CutJobsController } from "./modules/sales/presentation/controllers/cut-jobs.controller";
@@ -11,12 +12,18 @@ import { LabelsController } from "./modules/labels/presentation/controllers/labe
 import { AuditController } from "./modules/audit/presentation/controllers/audit.controller";
 import { DashboardController } from "./modules/dashboard/presentation/controllers/dashboard.controller";
 import { SettingsController } from "./modules/settings/presentation/controllers/settings.controller";
+import { UsersController } from "./modules/users/presentation/controllers/users.controller";
+import { StatusLabelsController } from "./modules/status-labels/presentation/controllers/status-labels.controller";
+
+import { GetStatusLabelsUseCase } from "./modules/status-labels/application/use-cases/get-status-labels.use-case";
+import { PrismaStatusLabelRepository } from "./modules/status-labels/infrastructure/persistence/prisma/prisma-status-label.repository";
 
 @Module({
   controllers: [
     HealthController,
     AuthController,
     PricingController,
+    PriceListsController,
     CatalogController,
     SalesController,
     CutJobsController,
@@ -25,7 +32,13 @@ import { SettingsController } from "./modules/settings/presentation/controllers/
     LabelsController,
     AuditController,
     DashboardController,
-    SettingsController
+    SettingsController,
+    UsersController,
+    StatusLabelsController
+  ],
+  providers: [
+    GetStatusLabelsUseCase,
+    PrismaStatusLabelRepository
   ]
 })
 export class AppModule {}

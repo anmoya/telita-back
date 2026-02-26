@@ -21,10 +21,21 @@ export class PrismaSalesRepository {
     });
     if (!priceList) throw new Error("Price list not found.");
 
+    // Get next quote number for this branch using a transaction
+    const quoteNumber = await prismaClient.$transaction(async (tx) => {
+      const lastSale = await tx.sale.findFirst({
+        where: { branchId: branch.id },
+        orderBy: { quoteNumber: "desc" },
+        select: { quoteNumber: true }
+      });
+      return (lastSale?.quoteNumber ?? 0) + 1;
+    });
+
     const sale = await prismaClient.sale.create({
       data: {
         branchId: branch.id,
         createdBy: createdBy.id,
+        quoteNumber,
         customerName: input.customerName,
         customerReference: input.customerReference,
         status: SaleStatus.DRAFT,
@@ -41,7 +52,7 @@ export class PrismaSalesRepository {
       entityType: "sale",
       entityId: sale.id,
       action: AuditAction.CREATE,
-      afterJson: { status: sale.status, priceListId: sale.priceListId }
+      afterJson: { status: sale.status, priceListId: sale.priceListId, quoteNumber: sale.quoteNumber }
     });
 
     return sale;
@@ -129,6 +140,11 @@ export class PrismaSalesRepository {
     if (!sale) throw new Error("Sale not found.");
     if (sale.status !== SaleStatus.DRAFT) throw new Error("Only DRAFT sale can be confirmed.");
     if (sale.lines.length === 0) throw new Error("Sale without lines cannot be confirmed.");
+    
+    // Validate customer_name is required for confirmation
+    if (!sale.customerName || sale.customerName.trim() === "") {
+      throw new Error("El nombre del cliente es obligatorio para confirmar la venta.");
+    }
 
     if (rules?.scrapRequiredAtStage === "AT_SALE_CLOSE") {
       const lineIds = sale.lines.map((l) => l.id);

@@ -36,7 +36,7 @@ export class SalesController {
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     try {
       const sale = await this.repo.createDraft({ ...body, createdByEmail: auth.email });
-      return { saleId: sale.id, status: sale.status };
+      return { saleId: sale.id, quoteCode: `COT-${sale.quoteNumber}`, status: sale.status };
     } catch (error) {
       throw new BadRequestException(getErrorMessage(error));
     }
@@ -135,7 +135,11 @@ export class SalesController {
     const sales = await this.repo.list(branchCode);
     return sales.map((sale) => ({
       id: sale.id,
+      quoteCode: `COT-${sale.quoteNumber}`,
+      quoteNumber: sale.quoteNumber,
       status: sale.status,
+      customerName: sale.customerName,
+      customerReference: sale.customerReference,
       subtotalAmount: Number(sale.subtotalAmount),
       taxAmount: Number(sale.taxAmount),
       totalAmount: Number(sale.totalAmount),

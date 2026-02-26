@@ -286,6 +286,7 @@ model Sale {
   id              String    @id @default(uuid()) @db.Uuid
   branchId        String    @map("branch_id") @db.Uuid
   createdBy       String    @map("created_by") @db.Uuid
+  quoteNumber     Int       @default(0) @map("quote_number")
   customerName    String?   @map("customer_name") @db.VarChar(160)
   customerReference String? @map("customer_reference") @db.VarChar(120)
   status          SaleStatus
@@ -475,4 +476,15 @@ model AuditLog {
 
   @@index([entityType, entityId, createdAt])
   @@map("audit_log")
+}
+
+model StatusLabel {
+  id           Int    @id @default(autoincrement()) @map("id")
+  entityType   String @map("entity_type") @db.VarChar(40)
+  statusCode   String @map("status_code") @db.VarChar(40)
+  labelEs      String @map("label_es") @db.VarChar(80)
+  descriptionEs String @map("description_es") @db.Text
+
+  @@unique([entityType, statusCode])
+  @@map("status_label")
 }
