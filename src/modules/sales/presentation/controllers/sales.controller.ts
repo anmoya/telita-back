@@ -5,9 +5,13 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
+  Patch,
   Post,
-  Query
+  Query,
+  UnprocessableEntityException
 } from "@nestjs/common";
 import { Headers } from "@nestjs/common";
 import { PrismaSalesRepository } from "../../infrastructure/persistence/prisma/prisma-sales.repository";
@@ -20,6 +24,51 @@ export class SalesController {
   private readonly repo = new PrismaSalesRepository();
   private readonly scrapsRepo = new PrismaScrapsRepository();
   private readonly settingsRepo = new PrismaSettingsRepository();
+
+  @Post("from-quote")
+  @HttpCode(HttpStatus.OK)
+  async createFromQuote(
+    @Body() body: {
+      branchCode: string;
+      priceListName: string;
+      customerName?: string;
+      customerReference?: string;
+      items: Array<{
+        skuCode: string;
+        requestedWidthM: number;
+        requestedHeightM: number;
+        quantity: number;
+        categoryId?: string;
+        categoryName?: string;
+        displayOrder?: number;
+        lineNote?: string;
+      }>;
+    },
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      const result = await this.repo.createFromQuote({ ...body, createdByEmail: auth.email });
+      return {
+        saleId: result.sale.id,
+        quoteCode: `COT-${result.sale.quoteNumber}`,
+        status: result.sale.status,
+        linesCreated: result.linesCreated,
+        subtotalAmount: result.subtotalAmount,
+        taxAmount: result.taxAmount,
+        totalAmount: result.totalAmount
+      };
+    } catch (error) {
+      if (error instanceof Error && (error as { isValidationError?: boolean }).isValidationError) {
+        throw new UnprocessableEntityException({
+          message: "Some items are invalid",
+          lineErrors: (error as { lineErrors?: unknown }).lineErrors
+        });
+      }
+      throw new BadRequestException(getErrorMessage(error));
+    }
+  }
 
   @Post()
   async createDraft(
@@ -45,13 +94,22 @@ export class SalesController {
   @Post(":saleId/lines")
   async addLine(
     @Param("saleId") saleId: string,
-    @Body() body: { skuCode: string; requestedWidthM: number; requestedHeightM: number; quantity: number },
+    @Body() body: {
+      skuCode: string;
+      requestedWidthM: number;
+      requestedHeightM: number;
+      quantity: number;
+      categoryId?: string;
+      categoryName?: string;
+      displayOrder?: number;
+      lineNote?: string;
+    },
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     try {
-      await this.repo.addLine(saleId, body);
+      await this.repo.addLine(saleId, { ...body, createdByEmail: auth.email });
       return { ok: true };
     } catch (error) {
       throw new BadRequestException(getErrorMessage(error));
@@ -128,6 +186,38 @@ export class SalesController {
     }
   }
 
+  @Patch(":saleId")
+  async updateCustomer(
+    @Param("saleId") saleId: string,
+    @Body() body: { customerName?: string | null; customerReference?: string | null },
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      await this.repo.updateCustomer(saleId, auth.email, body);
+      return { ok: true };
+    } catch (error) {
+      throw new BadRequestException(getErrorMessage(error));
+    }
+  }
+
+  @Patch(":saleId/payment-summary")
+  async updatePaymentSummary(
+    @Param("saleId") saleId: string,
+    @Body() body: { amountPaid: number },
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      await this.repo.updatePaymentSummary(saleId, body.amountPaid);
+      return { ok: true };
+    } catch (error) {
+      throw new BadRequestException(getErrorMessage(error));
+    }
+  }
+
   @Get()
   async list(@Query("branchCode") branchCode = "MAIN", @Headers("authorization") authorization?: string) {
     const auth = requireAuth(authorization);
@@ -143,6 +233,8 @@ export class SalesController {
       subtotalAmount: Number(sale.subtotalAmount),
       taxAmount: Number(sale.taxAmount),
       totalAmount: Number(sale.totalAmount),
+      amountPaid: Number(sale.amountPaid),
+      balanceDue: Number(sale.balanceDue),
       lines: sale.lines.map((line) => ({
         id: line.id,
         skuCode: line.sku.code,
@@ -151,7 +243,11 @@ export class SalesController {
         requestedHeightM: Number(line.requestedHeightM),
         unitPrice: Number(line.unitPrice),
         lineTotal: Number(line.lineTotal),
-        allocatedScrapId: line.allocations[0]?.scrapId ?? null
+        allocatedScrapId: line.allocations[0]?.scrapId ?? null,
+        categoryId: line.categoryId ?? null,
+        categoryName: line.category?.name ?? null,
+        displayOrder: line.displayOrder,
+        lineNote: line.lineNote ?? null
       }))
     }));
   }

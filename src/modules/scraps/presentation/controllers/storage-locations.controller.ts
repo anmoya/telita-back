@@ -7,11 +7,64 @@ export class StorageLocationsController {
   private readonly repo = new PrismaScrapsRepository();
 
   @Get()
-  async list(@Query("branchCode") branchCode: string, @Headers("authorization") authorization?: string) {
+  async list(
+    @Query("branchCode") branchCode: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
+    @Headers("authorization") authorization?: string
+  ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     try {
-      return await this.repo.listStorageLocations(branchCode);
+      return await this.repo.listStorageLocations(branchCode, page ? Number(page) : 1, limit ? Number(limit) : 50);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
+  @Post("bulk-create")
+  async bulkCreate(
+    @Body()
+    body: {
+      branchCode: string;
+      rowMode: "LETTER" | "FIXED";
+      rowStart: string;
+      rowEnd: string;
+      colStart: number;
+      colEnd: number;
+      separator: string;
+      descriptionTemplate?: string;
+    },
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin"]);
+    try {
+      return await this.repo.bulkCreateStorageLocations({ ...body, createdByEmail: auth.email });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
+  @Post("bulk-preview")
+  async bulkPreview(
+    @Body()
+    body: {
+      branchCode: string;
+      rowMode: "LETTER" | "FIXED";
+      rowStart: string;
+      rowEnd: string;
+      colStart: number;
+      colEnd: number;
+      separator: string;
+      descriptionTemplate?: string;
+    },
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin"]);
+    try {
+      return await this.repo.bulkPreviewStorageLocations(body);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
     }

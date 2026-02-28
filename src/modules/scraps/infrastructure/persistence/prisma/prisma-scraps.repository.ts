@@ -17,10 +17,10 @@ export class PrismaScrapsRepository {
         }
       }
     });
-    if (!quote) throw new Error("Quote not found.");
+    if (!quote) throw new Error("Cotización no encontrada.");
 
     const generatedBy = await prismaClient.appUser.findUnique({ where: { email: input.generatedByEmail } });
-    if (!generatedBy) throw new Error("User not found.");
+    if (!generatedBy) throw new Error("Usuario no encontrado.");
 
     const skuWidthM = Number(quote.sku.widthValue) * Number(quote.sku.widthUnit.toMeterFactor);
     const skuLengthM = Number(quote.sku.lengthValue) * Number(quote.sku.lengthUnit.toMeterFactor);
@@ -91,28 +91,28 @@ export class PrismaScrapsRepository {
 
   async allocateToSaleLine(input: { saleLineId: string; scrapId: string; allocatedByEmail: string }) {
     const user = await prismaClient.appUser.findUnique({ where: { email: input.allocatedByEmail } });
-    if (!user) throw new Error("User not found.");
+    if (!user) throw new Error("Usuario no encontrado.");
 
     const scrap = await prismaClient.scrap.findUnique({ where: { id: input.scrapId } });
-    if (!scrap) throw new Error("Scrap not found.");
-    if (scrap.status !== ScrapStatus.STORED) throw new Error("Scrap must be STORED to be allocated.");
+    if (!scrap) throw new Error("Retazo no encontrado.");
+    if (scrap.status !== ScrapStatus.STORED) throw new Error("El retazo debe estar en estado ALMACENADO para ser asignado.");
 
     const existing = await prismaClient.saleLineScrapAllocation.findFirst({
       where: { scrapId: input.scrapId, isActive: true }
     });
-    if (existing) throw new Error("Scrap already has an active allocation.");
+    if (existing) throw new Error("El retazo ya tiene una asignación activa.");
 
     const saleLine = await prismaClient.saleLine.findUnique({
       where: { id: input.saleLineId },
       include: { sale: true }
     });
-    if (!saleLine) throw new Error("Sale line not found.");
-    if (saleLine.sale.status !== "DRAFT") throw new Error("Can only allocate to DRAFT sale lines.");
+    if (!saleLine) throw new Error("Línea de venta no encontrada.");
+    if (saleLine.sale.status !== "DRAFT") throw new Error("Solo se puede asignar a líneas de venta en estado DRAFT.");
 
     const lineAllocation = await prismaClient.saleLineScrapAllocation.findFirst({
       where: { saleLineId: input.saleLineId, isActive: true }
     });
-    if (lineAllocation) throw new Error("Sale line already has an active allocation.");
+    if (lineAllocation) throw new Error("La línea de venta ya tiene una asignación activa.");
 
     const allocation = await prismaClient.saleLineScrapAllocation.create({
       data: {
@@ -135,20 +135,20 @@ export class PrismaScrapsRepository {
 
   async releaseAllocation(input: { saleLineId: string; releasedByEmail: string }) {
     const user = await prismaClient.appUser.findUnique({ where: { email: input.releasedByEmail } });
-    if (!user) throw new Error("User not found.");
+    if (!user) throw new Error("Usuario no encontrado.");
 
     const allocation = await prismaClient.saleLineScrapAllocation.findFirst({
       where: { saleLineId: input.saleLineId, isActive: true },
       include: { scrap: true }
     });
-    if (!allocation) throw new Error("No active allocation for this sale line.");
+    if (!allocation) throw new Error("No existe una asignación activa para esta línea de venta.");
 
     const saleLine = await prismaClient.saleLine.findUnique({
       where: { id: input.saleLineId },
       include: { sale: true }
     });
-    if (!saleLine) throw new Error("Sale line not found.");
-    if (saleLine.sale.status !== "DRAFT") throw new Error("Can only release allocation from DRAFT sale lines.");
+    if (!saleLine) throw new Error("Línea de venta no encontrada.");
+    if (saleLine.sale.status !== "DRAFT") throw new Error("Solo se puede liberar una asignación de líneas en estado DRAFT.");
 
     await prismaClient.saleLineScrapAllocation.update({
       where: { id: allocation.id },
@@ -175,7 +175,7 @@ export class PrismaScrapsRepository {
     generatedByEmail: string;
   }) {
     const user = await prismaClient.appUser.findUnique({ where: { email: input.generatedByEmail } });
-    if (!user) throw new Error("User not found.");
+    if (!user) throw new Error("Usuario no encontrado.");
 
     const area = round2(input.scrapWidthM * input.scrapHeightM);
     const threshold = await this.getGlobalThresholdArea(input.branchId);
@@ -252,24 +252,24 @@ export class PrismaScrapsRepository {
   }) {
     const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
     const user = await prismaClient.appUser.findUnique({ where: { email: input.createdByEmail } });
-    if (!branch || !user) throw new Error("Branch/user not found.");
+    if (!branch || !user) throw new Error("Sucursal o usuario no encontrado.");
 
     // Validate code format: alphanumeric + hyphen only
     if (!/^[A-Za-z0-9-]+$/.test(input.code)) {
-      throw new Error("Code must be alphanumeric with hyphens only");
+      throw new Error("El código solo puede contener letras, números y guiones");
     }
     if (input.code.length > 20) {
-      throw new Error("Code must be at most 20 characters");
+      throw new Error("El código no puede superar los 20 caracteres");
     }
     if (input.description && input.description.length > 160) {
-      throw new Error("Description must be at most 160 characters");
+      throw new Error("La descripción no puede superar los 160 caracteres");
     }
 
     // Check unique code per branch
     const existing = await prismaClient.storageLocation.findFirst({
       where: { branchId: branch.id, code: input.code }
     });
-    if (existing) throw new Error("Code already exists in this branch");
+    if (existing) throw new Error("El código ya existe en esta sucursal");
 
     const location = await prismaClient.storageLocation.create({
       data: {
@@ -290,40 +290,42 @@ export class PrismaScrapsRepository {
     return location;
   }
 
-  async listStorageLocations(branchCode: string) {
+  async listStorageLocations(branchCode: string, page = 1, limit = 50) {
     const branch = await prismaClient.branch.findUnique({ where: { code: branchCode } });
-    if (!branch) return [];
+    if (!branch) return { data: [], total: 0, page, limit, totalPages: 0 };
 
-    const locations = await prismaClient.storageLocation.findMany({
-      where: { branchId: branch.id },
-      include: {
-        _count: {
-          select: {
-            scraps: {
-              where: {
-                status: {
-                  in: [
-                    ScrapStatus.PENDING_CLASSIFICATION,
-                    ScrapStatus.PENDING_STORAGE,
-                    ScrapStatus.STORED
-                  ]
-                }
-              }
-            }
-          }
-        }
-      },
-      orderBy: { code: "asc" }
-    });
+    const safeLimit = Math.min(limit, 100);
+    const safePage = Math.max(page, 1);
+    const skip = (safePage - 1) * safeLimit;
 
-    return locations.map((loc) => ({
-      id: loc.id,
-      code: loc.code,
-      description: loc.description,
-      isActive: loc.isActive,
-      scrapCountStored: loc._count.scraps,
-      canDelete: loc._count.scraps === 0 && loc.isActive
-    }));
+    const where = { branchId: branch.id };
+    const scrapWhere = { status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.STORED] } };
+
+    const [locations, total] = await Promise.all([
+      prismaClient.storageLocation.findMany({
+        where,
+        include: { _count: { select: { scraps: { where: scrapWhere } } } },
+        orderBy: { code: "asc" },
+        skip,
+        take: safeLimit
+      }),
+      prismaClient.storageLocation.count({ where })
+    ]);
+
+    return {
+      data: locations.map((loc) => ({
+        id: loc.id,
+        code: loc.code,
+        description: loc.description,
+        isActive: loc.isActive,
+        scrapCountStored: loc._count.scraps,
+        canDelete: loc._count.scraps === 0 && loc.isActive
+      })),
+      total,
+      page: safePage,
+      limit: safeLimit,
+      totalPages: Math.ceil(total / safeLimit)
+    };
   }
 
   async updateStorageLocation(id: string, input: { code?: string; description?: string; actorEmail: string }) {
@@ -331,31 +333,31 @@ export class PrismaScrapsRepository {
       where: { id },
       include: { scraps: { where: { status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.STORED] } } } }
     });
-    if (!existing) throw new Error("Location not found.");
+    if (!existing) throw new Error("Ubicación no encontrada.");
 
     const user = await prismaClient.appUser.findUnique({ where: { email: input.actorEmail } });
-    if (!user) throw new Error("User not found.");
+    if (!user) throw new Error("Usuario no encontrado.");
 
     // Validate code if changing
     if (input.code && input.code !== existing.code) {
       if (existing.scraps.length > 0) {
-        throw new Error("Cannot change code: location has active stock");
+        throw new Error("No se puede cambiar el código: la ubicación tiene stock activo");
       }
       if (!/^[A-Za-z0-9-]+$/.test(input.code)) {
-        throw new Error("Code must be alphanumeric with hyphens only");
+        throw new Error("El código solo puede contener letras, números y guiones");
       }
       if (input.code.length > 20) {
-        throw new Error("Code must be at most 20 characters");
+        throw new Error("El código no puede superar los 20 caracteres");
       }
       // Check unique
       const duplicate = await prismaClient.storageLocation.findFirst({
         where: { branchId: existing.branchId, code: input.code }
       });
-      if (duplicate) throw new Error("Code already exists in this branch");
+      if (duplicate) throw new Error("El código ya existe en esta sucursal");
     }
 
     if (input.description !== undefined && input.description.length > 160) {
-      throw new Error("Description must be at most 160 characters");
+      throw new Error("La descripción no puede superar los 160 caracteres");
     }
 
     const updated = await prismaClient.storageLocation.update({
@@ -384,14 +386,14 @@ export class PrismaScrapsRepository {
       where: { id },
       include: { scraps: { where: { status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.STORED] } } } }
     });
-    if (!existing) throw new Error("Location not found.");
+    if (!existing) throw new Error("Ubicación no encontrada.");
 
     if (existing.scraps.length > 0) {
-      throw new Error("Cannot delete: location has active stock");
+      throw new Error("No se puede eliminar: la ubicación tiene stock activo");
     }
 
     const user = await prismaClient.appUser.findUnique({ where: { email: actorEmail } });
-    if (!user) throw new Error("User not found.");
+    if (!user) throw new Error("Usuario no encontrado.");
 
     await prismaClient.storageLocation.delete({ where: { id } });
 
@@ -409,10 +411,10 @@ export class PrismaScrapsRepository {
     const existing = await prismaClient.storageLocation.findUnique({
       where: { id }
     });
-    if (!existing) throw new Error("Location not found.");
+    if (!existing) throw new Error("Ubicación no encontrada.");
 
     const user = await prismaClient.appUser.findUnique({ where: { email: actorEmail } });
-    if (!user) throw new Error("User not found.");
+    if (!user) throw new Error("Usuario no encontrado.");
 
     const newStatus = !existing.isActive;
 
@@ -425,7 +427,7 @@ export class PrismaScrapsRepository {
         }
       });
       if (activeCount > 0) {
-        throw new Error("Cannot deactivate: location has active stock");
+        throw new Error("No se puede desactivar: la ubicación tiene stock activo");
       }
     }
 
@@ -449,18 +451,18 @@ export class PrismaScrapsRepository {
 
   async assignLocation(input: { scrapId: string; locationCode: string; classifiedByEmail: string }) {
     const scrap = await prismaClient.scrap.findUnique({ where: { id: input.scrapId } });
-    if (!scrap) throw new Error("Scrap not found.");
+    if (!scrap) throw new Error("Retazo no encontrado.");
 
     const user = await prismaClient.appUser.findUnique({ where: { email: input.classifiedByEmail } });
-    if (!user) throw new Error("User not found.");
+    if (!user) throw new Error("Usuario no encontrado.");
 
     const location = await prismaClient.storageLocation.findFirst({
       where: { branchId: scrap.branchId, code: input.locationCode, isActive: true }
     });
-    if (!location) throw new Error("Location not found.");
+    if (!location) throw new Error("Ubicación no encontrada.");
 
     if (scrap.status !== ScrapStatus.PENDING_STORAGE) {
-      throw new Error("Only PENDING_STORAGE scrap can be assigned.");
+      throw new Error("Solo los retazos en estado PENDIENTE DE ALMACENAMIENTO pueden ser asignados.");
     }
 
     const updated = await prismaClient.scrap.update({
@@ -483,6 +485,180 @@ export class PrismaScrapsRepository {
     });
     return updated;
   }
+
+  async bulkPreviewStorageLocations(input: {
+    branchCode: string;
+    rowMode: "LETTER" | "FIXED";
+    rowStart: string;
+    rowEnd: string;
+    colStart: number;
+    colEnd: number;
+    separator: string;
+    descriptionTemplate?: string;
+  }) {
+    // Get branch
+    const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
+    if (!branch) throw new Error("Sucursal no encontrada.");
+
+    // Validate parameters
+    const colCount = input.colEnd - input.colStart + 1;
+    if (colCount > 500) throw new Error("La cantidad de columnas supera el máximo permitido (500)");
+
+    let rowCount: number;
+    const generatedCodes: string[] = [];
+
+    if (input.rowMode === "LETTER") {
+      const startCode = input.rowStart.charCodeAt(0);
+      const endCode = input.rowEnd.charCodeAt(0);
+      if (startCode > endCode) throw new Error("rowStart debe ser menor o igual a rowEnd");
+      rowCount = endCode - startCode + 1;
+      if (rowCount > 26) throw new Error("El modo de fila LETRA soporta máximo 26 filas (A-Z)");
+
+      for (let i = startCode; i <= endCode; i++) {
+        const letter = String.fromCharCode(i);
+        for (let col = input.colStart; col <= input.colEnd; col++) {
+          generatedCodes.push(`${letter}${input.separator}${col}`);
+        }
+      }
+    } else {
+      // FIXED mode: use rowStart/rowEnd as fixed text row labels
+      const rows = generateFixedRows(input.rowStart, input.rowEnd);
+      rowCount = rows.length;
+      for (const row of rows) {
+        for (let col = input.colStart; col <= input.colEnd; col++) {
+          generatedCodes.push(`${row}${input.separator}${col}`);
+        }
+      }
+    }
+
+    // Validate total codes
+    const totalCodes = generatedCodes.length;
+    if (totalCodes > 2000) throw new Error("El total de códigos superaría el máximo permitido (2000)");
+
+    // Query existing codes
+    const existing = await prismaClient.storageLocation.findMany({
+      where: {
+        branchId: branch.id,
+        code: { in: generatedCodes }
+      },
+      select: { code: true }
+    });
+
+    const existingCodes = new Set(existing.map((loc) => loc.code));
+    const newCodes = generatedCodes.filter((code) => !existingCodes.has(code));
+
+    // Generate sample: first 10 + last 5 (if different)
+    const sampleSize = 15;
+    const sample = [];
+    if (totalCodes <= sampleSize) {
+      sample.push(...newCodes);
+    } else {
+      sample.push(...newCodes.slice(0, 10));
+      sample.push(...newCodes.slice(-5));
+    }
+
+    return {
+      totalToGenerate: totalCodes,
+      existingCount: existingCodes.size,
+      newCount: newCodes.length,
+      sample
+    };
+  }
+
+  async bulkCreateStorageLocations(input: {
+    branchCode: string;
+    rowMode: "LETTER" | "FIXED";
+    rowStart: string;
+    rowEnd: string;
+    colStart: number;
+    colEnd: number;
+    separator: string;
+    descriptionTemplate?: string;
+    createdByEmail: string;
+  }) {
+    const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
+    if (!branch) throw new Error("Sucursal no encontrada.");
+
+    const user = await prismaClient.appUser.findUnique({ where: { email: input.createdByEmail } });
+    if (!user) throw new Error("Usuario no encontrado.");
+
+    // Validate parameters
+    const colCount = input.colEnd - input.colStart + 1;
+    if (colCount > 500) throw new Error("La cantidad de columnas supera el máximo permitido (500)");
+
+    const generatedCodes: { code: string; description: string | undefined }[] = [];
+
+    if (input.rowMode === "LETTER") {
+      const startCode = input.rowStart.charCodeAt(0);
+      const endCode = input.rowEnd.charCodeAt(0);
+      if (startCode > endCode) throw new Error("rowStart debe ser menor o igual a rowEnd");
+      const rowCount = endCode - startCode + 1;
+      if (rowCount > 26) throw new Error("El modo de fila LETRA soporta máximo 26 filas (A-Z)");
+
+      for (let i = startCode; i <= endCode; i++) {
+        const letter = String.fromCharCode(i);
+        for (let col = input.colStart; col <= input.colEnd; col++) {
+          const code = `${letter}${input.separator}${col}`;
+          const description = input.descriptionTemplate
+            ? input.descriptionTemplate.replace("{row}", letter).replace("{col}", String(col))
+            : undefined;
+          generatedCodes.push({ code, description });
+        }
+      }
+    } else {
+      const rows = generateFixedRows(input.rowStart, input.rowEnd);
+      for (const row of rows) {
+        for (let col = input.colStart; col <= input.colEnd; col++) {
+          const code = `${row}${input.separator}${col}`;
+          const description = input.descriptionTemplate
+            ? input.descriptionTemplate.replace("{row}", row).replace("{col}", String(col))
+            : undefined;
+          generatedCodes.push({ code, description });
+        }
+      }
+    }
+
+    if (generatedCodes.length > 2000) throw new Error("El total de códigos superaría el máximo permitido (2000)");
+
+    // Filter out existing codes
+    const allCodes = generatedCodes.map((g) => g.code);
+    const existing = await prismaClient.storageLocation.findMany({
+      where: { branchId: branch.id, code: { in: allCodes } },
+      select: { code: true }
+    });
+    const existingCodes = new Set(existing.map((loc) => loc.code));
+    const toCreate = generatedCodes.filter((g) => !existingCodes.has(g.code));
+
+    // Bulk insert using createMany
+    await prismaClient.storageLocation.createMany({
+      data: toCreate.map((g) => ({
+        branchId: branch.id,
+        code: g.code,
+        description: g.description ?? null,
+        createdBy: user.id
+      }))
+    });
+
+    // Single audit log for the batch
+    await this.auditRepo.log({
+      branchId: branch.id,
+      actorUserId: user.id,
+      entityType: "storage_location",
+      entityId: branch.id,
+      action: AuditAction.CREATE,
+      afterJson: {
+        bulkCreate: true,
+        created: toCreate.length,
+        skipped: existingCodes.size
+      }
+    });
+
+    return {
+      created: toCreate.length,
+      skipped: existingCodes.size,
+      total: generatedCodes.length
+    };
+  }
 }
 
 function round2(value: number): number {
@@ -500,4 +676,22 @@ function parseScrapStatus(value?: string): ScrapStatus | undefined {
     ScrapStatus.USED
   ];
   return allowed.includes(normalized as ScrapStatus) ? (normalized as ScrapStatus) : undefined;
+}
+
+function generateFixedRows(rowStart: string, rowEnd: string): string[] {
+  // For FIXED mode, parse rowStart and rowEnd as comma-separated values
+  // If they contain commas, split them; otherwise treat as simple strings
+  if (rowStart.includes(",") || rowEnd.includes(",")) {
+    const rows = [];
+    const startRows = rowStart.split(",").map((r) => r.trim());
+    const endRows = rowEnd.split(",").map((r) => r.trim());
+    rows.push(...startRows);
+    // If rowEnd is different from rowStart, add endRows (avoid duplicates)
+    if (rowEnd !== rowStart) {
+      rows.push(...endRows);
+    }
+    return [...new Set(rows)];
+  }
+  // Single row case: just use rowStart
+  return [rowStart];
 }

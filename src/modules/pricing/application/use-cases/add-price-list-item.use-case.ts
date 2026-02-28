@@ -13,12 +13,12 @@ export class AddPriceListItemUseCase {
   async execute(input: AddPriceListItemInput): Promise<{ id: string }> {
     // Validate: basePrice > 0
     if (input.basePrice <= 0) {
-      throw new Error("Base price must be greater than 0");
+      throw new Error("El precio base debe ser mayor a 0");
     }
 
     // Validate: discountPct between 0 and 100
     if (input.discountPct < 0 || input.discountPct > 100) {
-      throw new Error("Discount percentage must be between 0 and 100");
+      throw new Error("El descuento debe estar entre 0 y 100");
     }
 
     const result = await this.itemRepo.create({

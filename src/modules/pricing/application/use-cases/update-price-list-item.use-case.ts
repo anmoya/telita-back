@@ -12,12 +12,12 @@ export class UpdatePriceListItemUseCase {
   async execute(input: UpdatePriceListItemInput): Promise<void> {
     // Validate: basePrice > 0 if provided
     if (input.basePrice !== undefined && input.basePrice <= 0) {
-      throw new Error("Base price must be greater than 0");
+      throw new Error("El precio base debe ser mayor a 0");
     }
 
     // Validate: discountPct between 0 and 100 if provided
     if (input.discountPct !== undefined && (input.discountPct < 0 || input.discountPct > 100)) {
-      throw new Error("Discount percentage must be between 0 and 100");
+      throw new Error("El descuento debe estar entre 0 y 100");
     }
 
     const updateData: { basePrice?: number; discountPct?: number } = {};

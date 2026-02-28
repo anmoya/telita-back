@@ -48,7 +48,7 @@ export class PrismaPriceListItemRepository implements PriceListItemRepositoryPor
       where: { code: params.skuCode, isActive: true },
       select: { id: true }
     });
-    if (!sku) throw new Error("SKU not found or inactive");
+    if (!sku) throw new Error("SKU no encontrado o inactivo");
 
     // Check for duplicate
     const existing = await this.prisma.priceListItem.findUnique({
@@ -56,7 +56,7 @@ export class PrismaPriceListItemRepository implements PriceListItemRepositoryPor
         priceListId_skuId: { priceListId: params.priceListId, skuId: sku.id }
       }
     });
-    if (existing) throw new Error("SKU already exists in this price list");
+    if (existing) throw new Error("El SKU ya existe en esta lista de precios");
 
     const item = await this.prisma.priceListItem.create({
       data: {

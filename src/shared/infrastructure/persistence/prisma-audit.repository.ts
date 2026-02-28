@@ -28,26 +28,31 @@ export class PrismaAuditRepository {
     entityType?: string;
     entityId?: string;
     branchCode?: string;
+    page?: number;
     limit?: number;
   }) {
-    return prismaClient.auditLog.findMany({
-      where: {
-        entityType: params.entityType,
-        entityId: params.entityId,
-        branch: params.branchCode ? { code: params.branchCode } : undefined
-      },
-      orderBy: { createdAt: "desc" },
-      take: params.limit ?? 100,
-      include: {
-        actor: {
-          select: {
-            email: true,
-            fullName: true,
-            role: true
-          }
-        }
-      }
-    });
+    const limit = Math.min(params.limit ?? 20, 100);
+    const page = Math.max(params.page ?? 1, 1);
+    const skip = (page - 1) * limit;
+
+    const where = {
+      entityType: params.entityType,
+      entityId: params.entityId,
+      branch: params.branchCode ? { code: params.branchCode } : undefined
+    };
+
+    const [data, total] = await Promise.all([
+      prismaClient.auditLog.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit,
+        include: { actor: { select: { email: true, fullName: true, role: true } } }
+      }),
+      prismaClient.auditLog.count({ where })
+    ]);
+
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 }
 

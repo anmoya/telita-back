@@ -8,7 +8,8 @@ import {
   Param,
   Post,
   Query,
-  StreamableFile
+  StreamableFile,
+  UnprocessableEntityException
 } from "@nestjs/common";
 
 import { PrismaLabelsRepository } from "../../infrastructure/persistence/prisma/prisma-labels.repository";
@@ -100,6 +101,58 @@ export class LabelsController {
     try {
       const buffer = await this.repo.getPdfContent(labelId);
       return new StreamableFile(buffer, { type: "text/html; charset=utf-8" });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
+  @Post("batch")
+  async createGenericBatch(
+    @Body() body: {
+      branchCode: string;
+      items: Array<{ type: "SALE_LINE" | "SCRAP"; saleLineId?: string; scrapId?: string }>;
+    },
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      const results = await this.repo.createBatch({ branchCode: body.branchCode, items: body.items, createdByEmail: auth.email });
+      return { total: results.length, labels: results };
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
+  @Get("batch-pdf")
+  @Header("Content-Type", "text/html; charset=utf-8")
+  async getBatchPdf(
+    @Query("labelIds") labelIdsParam: string,
+    @Headers("authorization") authorization?: string,
+    @Query("accessToken") accessToken?: string
+  ) {
+    const auth = requireAuth(authorization ?? (accessToken ? `Bearer ${accessToken}` : undefined));
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    const labelIds = labelIdsParam ? labelIdsParam.split(",").filter(Boolean) : [];
+    if (labelIds.length === 0) throw new UnprocessableEntityException("labelIds required");
+    try {
+      const buffer = await this.repo.getBatchPdfContent(labelIds);
+      return new StreamableFile(buffer, { type: "text/html; charset=utf-8" });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
+  @Post("batch-print")
+  async batchPrint(
+    @Body() body: { labelIds: string[] },
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      const result = await this.repo.batchReprint(body.labelIds, auth.email);
+      return result;
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
     }

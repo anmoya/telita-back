@@ -15,7 +15,7 @@ export class UpdatePriceListUseCase {
 
     if (input.name !== undefined) {
       if (input.name.trim().length === 0) {
-        throw new Error("Name cannot be empty");
+        throw new Error("El nombre no puede estar vacío");
       }
       updateData.name = input.name.trim();
     }

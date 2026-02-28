@@ -8,7 +8,7 @@ export class TogglePriceListStatusUseCase {
     const hasActiveDraftSales = await this.priceListRepo.hasActiveSales(id);
     
     if (hasActiveDraftSales) {
-      throw new Error("Cannot deactivate price list with active DRAFT sales");
+      throw new Error("No se puede desactivar una lista de precios con ventas DRAFT activas");
     }
 
     const newStatus = await this.priceListRepo.toggleStatus(id);

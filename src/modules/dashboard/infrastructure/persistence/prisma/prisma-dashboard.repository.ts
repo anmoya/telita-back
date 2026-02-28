@@ -4,7 +4,7 @@ import { prismaClient } from "../../../../../shared/infrastructure/persistence/p
 export class PrismaDashboardRepository {
   async getKpis(input: { branchCode: string; date?: string }) {
     const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
-    if (!branch) throw new Error("Branch not found.");
+    if (!branch) throw new Error("Sucursal no encontrada.");
 
     const target = input.date ? new Date(`${input.date}T00:00:00`) : new Date();
     const from = new Date(target);

@@ -19,10 +19,17 @@ enum SaleStatus {
   CANCELED
 }
 
+enum QuoteBatchStatus {
+  DRAFT
+  FINALIZED
+  EXPIRED
+}
+
 enum PriceMethod {
   LINEAR_METER
   AREA
   FIXED
+  TABLE_LOOKUP
 }
 
 enum CutJobStatus {
@@ -86,16 +93,18 @@ model Branch {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  brand            Brand?            @relation(fields: [brandId], references: [id])
-  users            AppUser[]
-  skus             FabricSku[]
-  priceLists       PriceList[]
-  sales            Sale[]
-  quotes           Quote[]
-  storageLocations StorageLocation[]
-  scraps           Scrap[]
-  labels           Label[]
-  auditLogs        AuditLog[]
+  brand                Brand?              @relation(fields: [brandId], references: [id])
+  users                AppUser[]
+  skus                 FabricSku[]
+  priceLists           PriceList[]
+  sales                Sale[]
+  quotes               Quote[]
+  storageLocations     StorageLocation[]
+  scraps               Scrap[]
+  labels               Label[]
+  auditLogs            AuditLog[]
+  quoteItemCategories  QuoteItemCategory[]
+  quoteBatches         QuoteBatch[]
 
   @@map("branch")
 }
@@ -123,6 +132,8 @@ model AppUser {
   settingsUpdated            SystemSetting[]    @relation("SystemSettingUpdatedBy")
   auditLogs                  AuditLog[]         @relation("AuditActor")
   scrapAllocations           SaleLineScrapAllocation[] @relation("AllocationAllocatedBy")
+  categoriesCreated          QuoteItemCategory[]       @relation("CategoryCreatedBy")
+  quoteBatches               QuoteBatch[]              @relation("QuoteBatchCreatedBy")
 
   @@map("app_user")
 }
@@ -175,9 +186,11 @@ model FabricSku {
   thicknessUnit UnitLength   @relation("SkuThicknessUnit", fields: [thicknessUnitId], references: [id])
   weightUnit    UnitWeight   @relation(fields: [weightUnitId], references: [id])
   priceItems    PriceListItem[]
-  saleLines     SaleLine[]
-  quotes        Quote[]
-  scraps        Scrap[]
+  priceCells       PriceListCell[]
+  saleLines        SaleLine[]
+  quotes           Quote[]
+  scraps           Scrap[]
+  quoteBatchLines  QuoteBatchLine[]
 
   @@unique([branchId, code])
   @@map("fabric_sku")
@@ -232,8 +245,10 @@ model PriceList {
   branch   Branch    @relation(fields: [branchId], references: [id])
   currency Currency  @relation(fields: [currencyCode], references: [code])
   items    PriceListItem[]
-  sales    Sale[]
-  quotes   Quote[]
+  cells        PriceListCell[]
+  sales        Sale[]
+  quotes       Quote[]
+  quoteBatches QuoteBatch[]
 
   @@map("price_list")
 }
@@ -252,6 +267,23 @@ model PriceListItem {
 
   @@unique([priceListId, skuId])
   @@map("price_list_item")
+}
+
+model PriceListCell {
+  id            String   @id @default(uuid()) @db.Uuid
+  priceListId   String   @map("price_list_id") @db.Uuid
+  skuId         String   @map("sku_id") @db.Uuid
+  maxWidthM     Decimal  @map("max_width_m") @db.Decimal(12, 3)
+  maxHeightM    Decimal  @map("max_height_m") @db.Decimal(12, 3)
+  unitPrice     Decimal  @map("unit_price") @db.Decimal(14, 2)
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  priceList PriceList @relation(fields: [priceListId], references: [id], onDelete: Cascade)
+  sku       FabricSku @relation(fields: [skuId], references: [id], onDelete: Cascade)
+
+  @@unique([priceListId, skuId, maxWidthM, maxHeightM])
+  @@index([priceListId, skuId])
+  @@map("price_list_cell")
 }
 
 model Quote {
@@ -295,6 +327,8 @@ model Sale {
   subtotalAmount  Decimal   @default(0) @map("subtotal_amount") @db.Decimal(14, 2)
   taxAmount       Decimal   @default(0) @map("tax_amount") @db.Decimal(14, 2)
   totalAmount     Decimal   @default(0) @map("total_amount") @db.Decimal(14, 2)
+  amountPaid      Decimal   @default(0) @map("amount_paid") @db.Decimal(14, 2)
+  balanceDue      Decimal   @default(0) @map("balance_due") @db.Decimal(14, 2)
   canceledReason  String?   @map("canceled_reason")
   createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -309,10 +343,75 @@ model Sale {
   @@map("sale")
 }
 
+model QuoteItemCategory {
+  id        String   @id @default(uuid()) @db.Uuid
+  branchId  String   @map("branch_id") @db.Uuid
+  name      String   @db.VarChar(80)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdBy String   @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  branch        Branch     @relation(fields: [branchId], references: [id])
+  createdByUser AppUser    @relation("CategoryCreatedBy", fields: [createdBy], references: [id])
+  saleLines        SaleLine[]
+  quoteBatchLines  QuoteBatchLine[]
+
+  @@unique([branchId, name])
+  @@map("quote_item_category")
+}
+
+model QuoteBatch {
+  id                String           @id @default(uuid()) @db.Uuid
+  branchId          String           @map("branch_id") @db.Uuid
+  createdBy         String           @map("created_by") @db.Uuid
+  priceListId       String           @map("price_list_id") @db.Uuid
+  customerName      String?          @map("customer_name") @db.VarChar(160)
+  customerReference String?          @map("customer_reference") @db.VarChar(120)
+  subtotalAmount    Decimal          @default(0) @map("subtotal_amount") @db.Decimal(14, 2)
+  taxAmount         Decimal          @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  totalAmount       Decimal          @default(0) @map("total_amount") @db.Decimal(14, 2)
+  status            QuoteBatchStatus @default(DRAFT)
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  branch        Branch         @relation(fields: [branchId], references: [id])
+  createdByUser AppUser        @relation("QuoteBatchCreatedBy", fields: [createdBy], references: [id])
+  priceList     PriceList      @relation(fields: [priceListId], references: [id])
+  lines         QuoteBatchLine[]
+
+  @@index([branchId, status, createdAt])
+  @@map("quote_batch")
+}
+
+model QuoteBatchLine {
+  id               String           @id @default(uuid()) @db.Uuid
+  quoteBatchId     String           @map("quote_batch_id") @db.Uuid
+  skuId            String           @map("sku_id") @db.Uuid
+  requestedWidthM  Decimal          @map("requested_width_m") @db.Decimal(12, 3)
+  requestedHeightM Decimal          @map("requested_height_m") @db.Decimal(12, 3)
+  quantity         Int              @default(1)
+  unitPrice        Decimal          @default(0) @map("unit_price") @db.Decimal(14, 2)
+  lineSubtotal     Decimal          @default(0) @map("line_subtotal") @db.Decimal(14, 2)
+  priceMethod      PriceMethod      @default(LINEAR_METER) @map("price_method")
+  categoryId       String?          @map("category_id") @db.Uuid
+  lineNote         String?          @map("line_note")
+  displayOrder     Int              @default(0) @map("display_order")
+
+  quoteBatch QuoteBatch         @relation(fields: [quoteBatchId], references: [id], onDelete: Cascade)
+  sku        FabricSku          @relation(fields: [skuId], references: [id])
+  category   QuoteItemCategory? @relation(fields: [categoryId], references: [id])
+
+  @@map("quote_batch_line")
+}
+
 model SaleLine {
   id               String    @id @default(uuid()) @db.Uuid
   saleId           String    @map("sale_id") @db.Uuid
   skuId            String    @map("sku_id") @db.Uuid
+  categoryId       String?   @map("category_id") @db.Uuid
+  displayOrder     Int       @default(0) @map("display_order")
+  lineNote         String?   @map("line_note") @db.VarChar(240)
   requestedWidthM  Decimal   @map("requested_width_m") @db.Decimal(12, 3)
   requestedHeightM Decimal   @map("requested_height_m") @db.Decimal(12, 3)
   quantity         Int
@@ -324,8 +423,9 @@ model SaleLine {
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  sale        Sale      @relation(fields: [saleId], references: [id])
-  sku         FabricSku @relation(fields: [skuId], references: [id])
+  sale        Sale               @relation(fields: [saleId], references: [id])
+  sku         FabricSku          @relation(fields: [skuId], references: [id])
+  category    QuoteItemCategory? @relation(fields: [categoryId], references: [id])
   cutJobs     CutJob[]
   scraps      Scrap[]
   labels      Label[]

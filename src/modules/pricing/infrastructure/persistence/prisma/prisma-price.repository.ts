@@ -20,6 +20,7 @@ export class PrismaPriceRepository implements PriceRepositoryPort {
     currencyCode: string;
     skuWidthM: number;
     unitPrice: number;
+    discountPct: number;
   } | null> {
     const branch = await this.prisma.branch.findUnique({
       where: { code: params.branchCode },
@@ -55,7 +56,8 @@ export class PrismaPriceRepository implements PriceRepositoryPort {
         skuId: sku.id
       },
       select: {
-        basePrice: true
+        basePrice: true,
+        discountPct: true
       }
     });
     if (!item) return null;
@@ -67,7 +69,8 @@ export class PrismaPriceRepository implements PriceRepositoryPort {
       priceListId: priceList.id,
       currencyCode: priceList.currencyCode,
       skuWidthM: Number(sku.widthValue),
-      unitPrice: Number(item.basePrice)
+      unitPrice: Number(item.basePrice),
+      discountPct: Number(item.discountPct)
     };
   }
 
@@ -152,5 +155,173 @@ export class PrismaPriceRepository implements PriceRepositoryPort {
       totalRounded: Number(quote.totalRounded),
       createdAt: quote.createdAt.toISOString()
     }));
+  }
+
+  // SPEC-31: Price list cell methods
+  async getCellPrice(params: {
+    priceListId: string;
+    skuId: string;
+    requestedWidthM: number;
+    requestedHeightM: number;
+  }): Promise<{ unitPrice: number; cellId: string } | null> {
+    // Find the most fitting cell: one where both max_width_m >= requestedWidthM
+    // and max_height_m >= requestedHeightM, ordered by smallest difference
+    const cell = await this.prisma.priceListCell.findFirst({
+      where: {
+        priceListId: params.priceListId,
+        skuId: params.skuId,
+        maxWidthM: { gte: params.requestedWidthM },
+        maxHeightM: { gte: params.requestedHeightM }
+      },
+      orderBy: [
+        { maxWidthM: "asc" },
+        { maxHeightM: "asc" }
+      ],
+      select: {
+        id: true,
+        unitPrice: true
+      }
+    });
+
+    if (!cell) return null;
+    return {
+      cellId: cell.id,
+      unitPrice: Number(cell.unitPrice)
+    };
+  }
+
+  async listCells(priceListId: string, skuId?: string): Promise<
+    Array<{
+      id: string;
+      priceListId: string;
+      skuId: string;
+      maxWidthM: number;
+      maxHeightM: number;
+      unitPrice: number;
+    }>
+  > {
+    const cells = await this.prisma.priceListCell.findMany({
+      where: {
+        priceListId,
+        ...(skuId && { skuId })
+      },
+      orderBy: [
+        { maxWidthM: "asc" },
+        { maxHeightM: "asc" }
+      ]
+    });
+    return cells.map((cell) => ({
+      id: cell.id,
+      priceListId: cell.priceListId,
+      skuId: cell.skuId,
+      maxWidthM: Number(cell.maxWidthM),
+      maxHeightM: Number(cell.maxHeightM),
+      unitPrice: Number(cell.unitPrice)
+    }));
+  }
+
+  async createCell(params: {
+    priceListId: string;
+    skuId: string;
+    maxWidthM: number;
+    maxHeightM: number;
+    unitPrice: number;
+  }): Promise<{
+    id: string;
+    priceListId: string;
+    skuId: string;
+    maxWidthM: number;
+    maxHeightM: number;
+    unitPrice: number;
+  }> {
+    const cell = await this.prisma.priceListCell.create({
+      data: {
+        priceListId: params.priceListId,
+        skuId: params.skuId,
+        maxWidthM: params.maxWidthM,
+        maxHeightM: params.maxHeightM,
+        unitPrice: params.unitPrice
+      }
+    });
+    await this.auditRepo.log({
+      branchId: "", // Will be fetched from context if needed
+      actorUserId: "",
+      entityType: "price_list_cell",
+      entityId: cell.id,
+      action: AuditAction.CREATE,
+      afterJson: {
+        maxWidthM: params.maxWidthM,
+        maxHeightM: params.maxHeightM,
+        unitPrice: params.unitPrice
+      }
+    });
+    return {
+      id: cell.id,
+      priceListId: cell.priceListId,
+      skuId: cell.skuId,
+      maxWidthM: Number(cell.maxWidthM),
+      maxHeightM: Number(cell.maxHeightM),
+      unitPrice: Number(cell.unitPrice)
+    };
+  }
+
+  async updateCell(
+    cellId: string,
+    params: Partial<{
+      maxWidthM: number;
+      maxHeightM: number;
+      unitPrice: number;
+    }>
+  ): Promise<{
+    id: string;
+    priceListId: string;
+    skuId: string;
+    maxWidthM: number;
+    maxHeightM: number;
+    unitPrice: number;
+  }> {
+    const cell = await this.prisma.priceListCell.update({
+      where: { id: cellId },
+      data: params
+    });
+    await this.auditRepo.log({
+      branchId: "",
+      actorUserId: "",
+      entityType: "price_list_cell",
+      entityId: cell.id,
+      action: AuditAction.UPDATE,
+      afterJson: params
+    });
+    return {
+      id: cell.id,
+      priceListId: cell.priceListId,
+      skuId: cell.skuId,
+      maxWidthM: Number(cell.maxWidthM),
+      maxHeightM: Number(cell.maxHeightM),
+      unitPrice: Number(cell.unitPrice)
+    };
+  }
+
+  async deleteCell(cellId: string): Promise<void> {
+    const cell = await this.prisma.priceListCell.findUnique({
+      where: { id: cellId }
+    });
+    if (!cell) return;
+
+    await this.prisma.priceListCell.delete({
+      where: { id: cellId }
+    });
+    await this.auditRepo.log({
+      branchId: "",
+      actorUserId: "",
+      entityType: "price_list_cell",
+      entityId: cellId,
+      action: AuditAction.DELETE,
+      beforeJson: {
+        maxWidthM: Number(cell.maxWidthM),
+        maxHeightM: Number(cell.maxHeightM),
+        unitPrice: Number(cell.unitPrice)
+      }
+    });
   }
 }

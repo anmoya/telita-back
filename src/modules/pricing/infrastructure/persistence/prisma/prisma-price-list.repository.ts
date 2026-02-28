@@ -78,7 +78,7 @@ export class PrismaPriceListRepository implements PriceListRepositoryPort {
       where: { code: params.branchCode },
       select: { id: true }
     });
-    if (!branch) throw new Error("Branch not found");
+    if (!branch) throw new Error("Sucursal no encontrada");
 
     const priceList = await this.prisma.priceList.create({
       data: {
@@ -111,7 +111,7 @@ export class PrismaPriceListRepository implements PriceListRepositoryPort {
       where: { id },
       select: { isActive: true }
     });
-    if (!priceList) throw new Error("Price list not found");
+    if (!priceList) throw new Error("Lista de precios no encontrada");
 
     const newStatus = !priceList.isActive;
 

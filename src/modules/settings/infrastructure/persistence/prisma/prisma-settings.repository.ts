@@ -27,7 +27,7 @@ export class PrismaSettingsRepository {
 
   async updateFlowRules(rules: FlowRules, updatedByEmail: string): Promise<FlowRules> {
     const user = await prismaClient.appUser.findUnique({ where: { email: updatedByEmail } });
-    if (!user) throw new Error("User not found.");
+    if (!user) throw new Error("Usuario no encontrado.");
 
     const existing = await prismaClient.systemSetting.findUnique({ where: { key: FLOW_RULES_KEY } });
 

@@ -1,5 +1,6 @@
 import {
   Body,
+  ConflictException,
   Controller,
   Delete,
   Get,
@@ -64,7 +65,16 @@ export class PriceListsController {
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin"]);
-    return this.factory.addPriceListItemUseCase.execute({ priceListId, ...body });
+    try {
+      return this.factory.addPriceListItemUseCase.execute({ priceListId, ...body });
+    } catch (error) {
+      // SPEC-30: Handle duplicate SKU with 409 Conflict
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("SKU already exists in this price list")) {
+        throw new ConflictException(message);
+      }
+      throw error;
+    }
   }
 
   @Put(":id/items/:itemId")
@@ -89,6 +99,90 @@ export class PriceListsController {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin"]);
     await this.factory.deletePriceListItemUseCase.execute(itemId);
+  }
+
+  // SPEC-31: Price list cell endpoints
+  @Get(":id/cells")
+  async listCells(
+    @Param("id") priceListId: string,
+    @Query("skuId") skuId?: string,
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    const { prismaClient } = await import("../../../../shared/infrastructure/persistence/prisma-client");
+    const { PrismaPriceRepository } = await import("../../infrastructure/persistence/prisma/prisma-price.repository");
+    const priceRepo = new PrismaPriceRepository(prismaClient);
+    return priceRepo.listCells(priceListId, skuId);
+  }
+
+  @Post(":id/cells")
+  @HttpCode(HttpStatus.CREATED)
+  async createCell(
+    @Param("id") priceListId: string,
+    @Body() body: CreatePriceListCellBody,
+    @Headers("authorization") authorization: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin"]);
+
+    // Resolve skuCode to skuId
+    const { prismaClient } = await import("../../../../shared/infrastructure/persistence/prisma-client");
+    const priceList = await prismaClient.priceList.findUnique({
+      where: { id: priceListId },
+      select: { branchId: true }
+    });
+    if (!priceList) {
+      throw new Error("Price list not found");
+    }
+
+    const sku = await prismaClient.fabricSku.findFirst({
+      where: { branchId: priceList.branchId, code: body.skuCode, isActive: true },
+      select: { id: true }
+    });
+    if (!sku) {
+      throw new Error("SKU not found");
+    }
+
+    const { PrismaPriceRepository } = await import("../../infrastructure/persistence/prisma/prisma-price.repository");
+    const priceRepo = new PrismaPriceRepository(prismaClient);
+    return priceRepo.createCell({
+      priceListId,
+      skuId: sku.id,
+      maxWidthM: body.maxWidthM,
+      maxHeightM: body.maxHeightM,
+      unitPrice: body.unitPrice
+    });
+  }
+
+  @Put(":id/cells/:cellId")
+  async updateCell(
+    @Param("id") _priceListId: string,
+    @Param("cellId") cellId: string,
+    @Body() body: UpdatePriceListCellBody,
+    @Headers("authorization") authorization: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin"]);
+    const { prismaClient } = await import("../../../../shared/infrastructure/persistence/prisma-client");
+    const { PrismaPriceRepository } = await import("../../infrastructure/persistence/prisma/prisma-price.repository");
+    const priceRepo = new PrismaPriceRepository(prismaClient);
+    return priceRepo.updateCell(cellId, body);
+  }
+
+  @Delete(":id/cells/:cellId")
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteCell(
+    @Param("id") _priceListId: string,
+    @Param("cellId") cellId: string,
+    @Headers("authorization") authorization: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin"]);
+    const { prismaClient } = await import("../../../../shared/infrastructure/persistence/prisma-client");
+    const { PrismaPriceRepository } = await import("../../infrastructure/persistence/prisma/prisma-price.repository");
+    const priceRepo = new PrismaPriceRepository(prismaClient);
+    await priceRepo.deleteCell(cellId);
   }
 }
 
@@ -115,4 +209,17 @@ type AddPriceListItemBody = {
 type UpdatePriceListItemBody = {
   basePrice?: number;
   discountPct?: number;
+};
+
+type CreatePriceListCellBody = {
+  skuCode: string;
+  maxWidthM: number;
+  maxHeightM: number;
+  unitPrice: number;
+};
+
+type UpdatePriceListCellBody = {
+  maxWidthM?: number;
+  maxHeightM?: number;
+  unitPrice?: number;
 };

@@ -18,7 +18,7 @@ export class CreatePriceListUseCase {
   async execute(input: CreatePriceListInput): Promise<CreatePriceListOutput> {
     // Validate: name required, unique per branch (handled by DB)
     if (!input.name || input.name.trim().length === 0) {
-      throw new Error("Name is required");
+      throw new Error("El nombre es obligatorio");
     }
 
     // Validate: basePrice > 0 handled in items
