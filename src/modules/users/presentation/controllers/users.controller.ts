@@ -128,6 +128,15 @@ export class UsersController {
     }
   }
 
+  /** PATCH /v1/users/:id/onboarding-complete */
+  @Patch(":id/onboarding-complete")
+  async markOnboarding(@Param("id") id: string, @Headers("authorization") authorization?: string) {
+    const auth = requireAuth(authorization);
+    if (auth.sub !== id) throw new ForbiddenException();
+    await this.repo.markOnboardingComplete(id);
+    return { ok: true };
+  }
+
   /** PATCH /v1/users/:id/status */
   @Patch(":id/status")
   async setStatus(

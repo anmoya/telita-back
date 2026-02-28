@@ -9,6 +9,7 @@ export type UserDto = {
   role: UserRole;
   branchCode: string;
   isActive: boolean;
+  onboardingCompletedAt: string | null;
   createdAt: string;
 };
 
@@ -44,4 +45,5 @@ export interface UserRepositoryPort {
   changePassword(id: string, input: ChangePasswordInput, hasher: PasswordHasherPort): Promise<void>;
   setStatus(id: string, isActive: boolean, actorId: string, actorRole: UserRole): Promise<UserDto>;
   countActiveSuperadmins(): Promise<number>;
+  markOnboardingComplete(userId: string): Promise<void>;
 }

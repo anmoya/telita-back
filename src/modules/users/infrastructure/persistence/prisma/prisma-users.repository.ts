@@ -17,6 +17,7 @@ function toDto(user: {
   fullName: string;
   role: string;
   isActive: boolean;
+  onboardingCompletedAt: Date | null;
   createdAt: Date;
   branch: { code: string };
 }): UserDto {
@@ -27,6 +28,7 @@ function toDto(user: {
     role: user.role as UserRole,
     branchCode: user.branch.code,
     isActive: user.isActive,
+    onboardingCompletedAt: user.onboardingCompletedAt?.toISOString() ?? null,
     createdAt: user.createdAt.toISOString()
   };
 }
@@ -37,6 +39,7 @@ const userSelect = {
   fullName: true,
   role: true,
   isActive: true,
+  onboardingCompletedAt: true,
   createdAt: true,
   branch: { select: { code: true } }
 } as const;
@@ -214,5 +217,12 @@ export class PrismaUsersRepository implements UserRepositoryPort {
 
   async countActiveSuperadmins(): Promise<number> {
     return prismaClient.appUser.count({ where: { role: "superadmin", isActive: true } });
+  }
+
+  async markOnboardingComplete(userId: string): Promise<void> {
+    await prismaClient.appUser.update({
+      where: { id: userId },
+      data: { onboardingCompletedAt: new Date() }
+    });
   }
 }

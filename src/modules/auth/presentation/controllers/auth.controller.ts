@@ -32,7 +32,8 @@ export class AuthController {
         fullName: user.fullName,
         role: user.role,
         branchCode: user.branch.code,
-        branchName: user.branch.name
+        branchName: user.branch.name,
+        onboardingCompletedAt: user.onboardingCompletedAt?.toISOString() ?? null
       }
     };
   }

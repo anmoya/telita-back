@@ -10,6 +10,7 @@ export class PrismaAuthRepository {
         fullName: true,
         role: true,
         passwordHash: true,
+        onboardingCompletedAt: true,
         branch: {
           select: {
             code: true,
