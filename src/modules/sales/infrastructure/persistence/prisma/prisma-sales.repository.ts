@@ -1,4 +1,4 @@
-import { AuditAction, CutJobStatus, PriceMethod, SaleStatus, ScrapStatus } from "@prisma/client";
+import { AuditAction, CutJobStatus, DiscountSource, PriceMethod, SaleStatus, ScrapStatus } from "@prisma/client";
 import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 import { PrismaQuoteItemCategoriesRepository } from "../../../../quote-item-categories/infrastructure/persistence/prisma/prisma-quote-item-categories.repository";
@@ -11,8 +11,11 @@ export class PrismaSalesRepository {
     branchCode: string;
     createdByEmail: string;
     priceListName: string;
+    customerId?: string;
     customerName?: string;
     customerReference?: string;
+    manualDiscountPct?: number;
+    manualDiscountReason?: string;
   }) {
     const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
     const createdBy = await prismaClient.appUser.findUnique({ where: { email: input.createdByEmail } });
@@ -33,16 +36,34 @@ export class PrismaSalesRepository {
       return (lastSale?.quoteNumber ?? 0) + 1;
     });
 
+    const customer = input.customerId
+      ? await prismaClient.customer.findFirst({
+          where: { id: input.customerId, branchId: branch.id, isActive: true }
+        })
+      : null;
+    if (input.customerId && !customer) throw new Error("Cliente no encontrado.");
+    const discount = resolveSaleDiscount({
+      manualDiscountPct: input.manualDiscountPct,
+      customerDiscountCode: customer?.discountCode ?? null,
+      customerDiscountPct: customer ? Number(customer.discountPct) : 0
+    });
+
     const sale = await prismaClient.sale.create({
       data: {
         branchId: branch.id,
         createdBy: createdBy.id,
         quoteNumber,
-        customerName: input.customerName,
-        customerReference: input.customerReference,
+        customerId: customer?.id ?? null,
+        customerName: customer?.fullName ?? input.customerName,
+        customerReference: customer?.companyOrReference ?? input.customerReference,
         status: SaleStatus.DRAFT,
         priceListId: priceList.id,
         currencyCode: priceList.currencyCode,
+        manualDiscountPct: normalizeDiscount(input.manualDiscountPct),
+        manualDiscountReason: input.manualDiscountReason?.trim() || null,
+        discountSource: discount.source,
+        discountCodeApplied: discount.code,
+        discountPctApplied: discount.pct,
         subtotalAmount: 0,
         taxAmount: 0,
         totalAmount: 0
@@ -65,6 +86,7 @@ export class PrismaSalesRepository {
     requestedWidthM: number;
     requestedHeightM: number;
     quantity: number;
+    roomAreaName?: string;
     categoryId?: string;
     categoryName?: string;
     displayOrder?: number;
@@ -88,10 +110,24 @@ export class PrismaSalesRepository {
     });
     if (!priceItem) throw new Error("Precio no encontrado para el SKU.");
 
-    const unitPrice = Number(priceItem.basePrice);
-    const linearMeters = input.requestedHeightM * input.quantity;
-    const lineSubtotal = round2(linearMeters * unitPrice);
-    const lineTotal = lineSubtotal;
+    const cell = await prismaClient.priceListCell.findFirst({
+      where: {
+        priceListId: sale.priceListId,
+        skuId: sku.id,
+        maxWidthM: { gte: input.requestedWidthM },
+        maxHeightM: { gte: input.requestedHeightM }
+      },
+      orderBy: [{ maxWidthM: "asc" }, { maxHeightM: "asc" }]
+    });
+    const priceMethod = cell ? PriceMethod.TABLE_LOOKUP : PriceMethod.LINEAR_METER;
+    const unitPrice = cell ? Number(cell.unitPrice) : Number(priceItem.basePrice);
+    const amounts = computeLineAmounts({
+      priceMethod,
+      requestedHeightM: input.requestedHeightM,
+      quantity: input.quantity,
+      unitPrice,
+      discountPct: Number(sale.discountPctApplied)
+    });
 
     // Resolve category: prefer explicit categoryId, fallback to categoryName (create if needed)
     let resolvedCategoryId: string | null = null;
@@ -113,15 +149,22 @@ export class PrismaSalesRepository {
         categoryId: resolvedCategoryId,
         displayOrder: input.displayOrder ?? 0,
         lineNote: input.lineNote ?? null,
+        roomAreaName: input.roomAreaName ?? input.categoryName ?? null,
         requestedWidthM: input.requestedWidthM,
         requestedHeightM: input.requestedHeightM,
         quantity: input.quantity,
-        priceMethod: PriceMethod.LINEAR_METER,
+        priceMethod,
         unitPrice,
-        discountPct: 0,
-        lineSubtotal,
-        lineTotal
+        discountPct: Number(sale.discountPctApplied),
+        lineSubtotal: amounts.lineSubtotal,
+        lineTotal: amounts.lineTotal
       }
+    });
+    await this.createSaleLinePieces(line.id, {
+      quantity: input.quantity,
+      requestedWidthM: input.requestedWidthM,
+      requestedHeightM: input.requestedHeightM,
+      roomAreaName: input.roomAreaName ?? input.categoryName ?? null
     });
     await this.auditRepo.log({
       branchId: sale.branchId,
@@ -133,24 +176,69 @@ export class PrismaSalesRepository {
         saleId: sale.id,
         skuId: sku.id,
         quantity: input.quantity,
-        lineTotal,
+        lineTotal: amounts.lineTotal,
         categoryId: resolvedCategoryId,
-        displayOrder: input.displayOrder ?? 0
+        displayOrder: input.displayOrder ?? 0,
+        roomAreaName: input.roomAreaName ?? input.categoryName ?? null
       }
     });
 
     await this.recomputeTotals(sale.id);
   }
 
-  async updateCustomer(saleId: string, updatedByEmail: string, input: { customerName?: string | null; customerReference?: string | null }) {
+  async updateCustomer(
+    saleId: string,
+    updatedByEmail: string,
+    input: {
+      customerId?: string | null;
+      customerName?: string | null;
+      customerReference?: string | null;
+      manualDiscountPct?: number | null;
+      manualDiscountReason?: string | null;
+    }
+  ) {
     const sale = await prismaClient.sale.findUnique({ where: { id: saleId } });
     if (!sale) throw new Error("Venta no encontrada.");
     if (sale.status !== "DRAFT") throw new Error("Solo se puede editar el cliente en ventas en estado DRAFT.");
     const user = await prismaClient.appUser.findUnique({ where: { email: updatedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
-    await prismaClient.sale.update({
-      where: { id: saleId },
-      data: { customerName: input.customerName, customerReference: input.customerReference }
+    const customer =
+      input.customerId === undefined
+        ? sale.customerId
+          ? await prismaClient.customer.findUnique({ where: { id: sale.customerId } })
+          : null
+        : input.customerId
+          ? await prismaClient.customer.findFirst({
+              where: { id: input.customerId, branchId: sale.branchId, isActive: true }
+            })
+          : null;
+    if (input.customerId && !customer) throw new Error("Cliente no encontrado.");
+    const manualDiscountPct =
+      input.manualDiscountPct === undefined || input.manualDiscountPct === null
+        ? Number(sale.manualDiscountPct)
+        : input.manualDiscountPct;
+    const discount = resolveSaleDiscount({
+      manualDiscountPct,
+      customerDiscountCode: customer?.discountCode ?? null,
+      customerDiscountPct: customer ? Number(customer.discountPct) : 0
+    });
+    await prismaClient.$transaction(async (tx) => {
+      await tx.sale.update({
+        where: { id: saleId },
+        data: {
+          customerId: input.customerId === undefined ? sale.customerId : customer?.id ?? null,
+          customerName: customer?.fullName ?? input.customerName ?? sale.customerName,
+          customerReference: customer?.companyOrReference ?? input.customerReference ?? sale.customerReference,
+          manualDiscountPct: normalizeDiscount(manualDiscountPct),
+          manualDiscountReason:
+            input.manualDiscountReason === undefined ? sale.manualDiscountReason : input.manualDiscountReason?.trim() || null,
+          discountSource: discount.source,
+          discountCodeApplied: discount.code,
+          discountPctApplied: discount.pct
+        }
+      });
+      await this.refreshLineDiscounts(tx, saleId, discount.pct);
+      await this.recomputeTotals(saleId, tx);
     });
     await this.auditRepo.log({
       branchId: sale.branchId,
@@ -158,8 +246,24 @@ export class PrismaSalesRepository {
       entityType: "sale",
       entityId: sale.id,
       action: AuditAction.UPDATE,
-      beforeJson: { customerName: sale.customerName, customerReference: sale.customerReference },
-      afterJson: { customerName: input.customerName, customerReference: input.customerReference }
+      beforeJson: {
+        customerId: sale.customerId,
+        customerName: sale.customerName,
+        customerReference: sale.customerReference,
+        manualDiscountPct: Number(sale.manualDiscountPct),
+        discountSource: sale.discountSource,
+        discountCodeApplied: sale.discountCodeApplied,
+        discountPctApplied: Number(sale.discountPctApplied)
+      },
+      afterJson: {
+        customerId: customer?.id ?? null,
+        customerName: customer?.fullName ?? input.customerName ?? sale.customerName,
+        customerReference: customer?.companyOrReference ?? input.customerReference ?? sale.customerReference,
+        manualDiscountPct: normalizeDiscount(manualDiscountPct),
+        discountSource: discount.source,
+        discountCodeApplied: discount.code,
+        discountPctApplied: discount.pct
+      }
     });
   }
 
@@ -182,16 +286,16 @@ export class PrismaSalesRepository {
     });
   }
 
-  async recomputeTotals(saleId: string) {
-    const sale = await prismaClient.sale.findUnique({ where: { id: saleId } });
+  async recomputeTotals(saleId: string, tx: MinimalSalesTx = prismaClient) {
+    const sale = await tx.sale.findUnique({ where: { id: saleId } });
     if (!sale) return;
-    const lines = await prismaClient.saleLine.findMany({ where: { saleId } });
+    const lines = await tx.saleLine.findMany({ where: { saleId } });
     const subtotal = round2(lines.reduce((acc, line) => acc + Number(line.lineTotal), 0));
     const tax = round2(subtotal * 0.19);
     const total = roundClpCash(subtotal + tax);
     const balanceDue = Math.max(total - Number(sale.amountPaid), 0);
 
-    await prismaClient.sale.update({
+    await tx.sale.update({
       where: { id: saleId },
       data: { subtotalAmount: subtotal, taxAmount: tax, totalAmount: total, balanceDue }
     });
@@ -210,9 +314,8 @@ export class PrismaSalesRepository {
     if (sale.status !== SaleStatus.DRAFT) throw new Error("Solo se puede confirmar una venta en estado DRAFT.");
     if (sale.lines.length === 0) throw new Error("No se puede confirmar una venta sin líneas.");
     
-    // Validate customer_name is required for confirmation
-    if (!sale.customerName || sale.customerName.trim() === "") {
-      throw new Error("El nombre del cliente es obligatorio para confirmar la venta.");
+    if (!sale.customerId) {
+      throw new Error("Debe seleccionar un cliente del maestro para confirmar la venta.");
     }
 
     if (rules?.scrapRequiredAtStage === "AT_SALE_CLOSE") {
@@ -301,13 +404,17 @@ export class PrismaSalesRepository {
     branchCode: string;
     createdByEmail: string;
     priceListName: string;
+    customerId?: string;
     customerName?: string;
     customerReference?: string;
+    manualDiscountPct?: number;
+    manualDiscountReason?: string;
     items: Array<{
       skuCode: string;
       requestedWidthM: number;
       requestedHeightM: number;
       quantity: number;
+      roomAreaName?: string;
       categoryId?: string;
       categoryName?: string;
       displayOrder?: number;
@@ -322,6 +429,17 @@ export class PrismaSalesRepository {
       where: { branchId: branch.id, name: input.priceListName, isActive: true }
     });
     if (!priceList) throw new Error("Lista de precios no encontrada.");
+    const customer = input.customerId
+      ? await prismaClient.customer.findFirst({
+          where: { id: input.customerId, branchId: branch.id, isActive: true }
+        })
+      : null;
+    if (input.customerId && !customer) throw new Error("Cliente no encontrado.");
+    const discount = resolveSaleDiscount({
+      manualDiscountPct: input.manualDiscountPct,
+      customerDiscountCode: customer?.discountCode ?? null,
+      customerDiscountPct: customer ? Number(customer.discountPct) : 0
+    });
 
     // Validate and compute all line data before opening the transaction
     type LineData = {
@@ -329,6 +447,7 @@ export class PrismaSalesRepository {
       categoryId: string | null;
       displayOrder: number;
       lineNote: string | null;
+      roomAreaName: string | null;
       requestedWidthM: number;
       requestedHeightM: number;
       quantity: number;
@@ -370,10 +489,14 @@ export class PrismaSalesRepository {
 
         const priceMethod = cell ? PriceMethod.TABLE_LOOKUP : PriceMethod.LINEAR_METER;
         const unitPrice = cell ? Number(cell.unitPrice) : Number(priceItem.basePrice);
-        const discountPct = Number(priceItem.discountPct ?? 0);
-        const linearMeters = item.requestedHeightM * item.quantity;
-        const lineSubtotal = round2(linearMeters * unitPrice * (1 - discountPct / 100));
-        const lineTotal = lineSubtotal;
+        const discountPct = discount.pct;
+        const amounts = computeLineAmounts({
+          priceMethod,
+          requestedHeightM: item.requestedHeightM,
+          quantity: item.quantity,
+          unitPrice,
+          discountPct
+        });
 
         // Resolve category
         let resolvedCategoryId: string | null = null;
@@ -393,14 +516,15 @@ export class PrismaSalesRepository {
           categoryId: resolvedCategoryId,
           displayOrder: item.displayOrder ?? i,
           lineNote: item.lineNote ?? null,
+          roomAreaName: item.roomAreaName ?? item.categoryName ?? null,
           requestedWidthM: item.requestedWidthM,
           requestedHeightM: item.requestedHeightM,
           quantity: item.quantity,
           priceMethod,
           unitPrice,
           discountPct,
-          lineSubtotal,
-          lineTotal
+          lineSubtotal: amounts.lineSubtotal,
+          lineTotal: amounts.lineTotal
         });
       } catch (err) {
         lineErrors.push({ index: i, error: err instanceof Error ? err.message : "Unknown error" });
@@ -430,11 +554,17 @@ export class PrismaSalesRepository {
           branchId: branch.id,
           createdBy: createdByUser.id,
           quoteNumber,
-          customerName: input.customerName,
-          customerReference: input.customerReference,
+          customerId: customer?.id ?? null,
+          customerName: customer?.fullName ?? input.customerName,
+          customerReference: customer?.companyOrReference ?? input.customerReference,
           status: SaleStatus.DRAFT,
           priceListId: priceList.id,
           currencyCode: priceList.currencyCode,
+          manualDiscountPct: normalizeDiscount(input.manualDiscountPct),
+          manualDiscountReason: input.manualDiscountReason?.trim() || null,
+          discountSource: discount.source,
+          discountCodeApplied: discount.code,
+          discountPctApplied: discount.pct,
           subtotalAmount,
           taxAmount,
           totalAmount
@@ -442,13 +572,14 @@ export class PrismaSalesRepository {
       });
 
       for (const ld of lineDataList) {
-        await tx.saleLine.create({
+        const createdLine = await tx.saleLine.create({
           data: {
             saleId: newSale.id,
             skuId: ld.skuId,
             categoryId: ld.categoryId,
             displayOrder: ld.displayOrder,
             lineNote: ld.lineNote,
+            roomAreaName: ld.roomAreaName,
             requestedWidthM: ld.requestedWidthM,
             requestedHeightM: ld.requestedHeightM,
             quantity: ld.quantity,
@@ -458,6 +589,12 @@ export class PrismaSalesRepository {
             lineSubtotal: ld.lineSubtotal,
             lineTotal: ld.lineTotal
           }
+        });
+        await createSaleLinePiecesTx(tx, createdLine.id, {
+          quantity: ld.quantity,
+          requestedWidthM: ld.requestedWidthM,
+          requestedHeightM: ld.requestedHeightM,
+          roomAreaName: ld.roomAreaName
         });
       }
 
@@ -486,11 +623,13 @@ export class PrismaSalesRepository {
     return prismaClient.sale.findMany({
       where: { branch: { code: branchCode } },
       include: {
+        customer: { select: { id: true, code: true, fullName: true, phone: true, email: true, companyOrReference: true, discountCode: true } },
         lines: {
           include: {
             sku: { select: { code: true } },
             category: { select: { name: true } },
-            allocations: { where: { isActive: true }, select: { scrapId: true } }
+            allocations: { where: { isActive: true }, select: { scrapId: true } },
+            pieces: { orderBy: { pieceIndex: "asc" } }
           },
           orderBy: { displayOrder: "asc" }
         }
@@ -519,6 +658,7 @@ export class PrismaSalesRepository {
       include: {
         saleLine: {
           include: {
+            pieces: { orderBy: { pieceIndex: "asc" } },
             sku: { include: { widthUnit: true, lengthUnit: true } },
             sale: { select: { branchId: true } }
           }
@@ -556,7 +696,103 @@ export class PrismaSalesRepository {
       orderBy: { createdAt: "desc" }
     });
   }
+
+  private async createSaleLinePieces(
+    saleLineId: string,
+    input: { quantity: number; requestedWidthM: number; requestedHeightM: number; roomAreaName: string | null }
+  ) {
+    await createSaleLinePiecesTx(prismaClient, saleLineId, input);
+  }
+
+  private async refreshLineDiscounts(tx: MinimalSalesTx, saleId: string, discountPct: number) {
+    const lines = await tx.saleLine.findMany({ where: { saleId } });
+    for (const line of lines) {
+      const amounts = computeLineAmounts({
+        priceMethod: line.priceMethod,
+        requestedHeightM: Number(line.requestedHeightM),
+        quantity: line.quantity,
+        unitPrice: Number(line.unitPrice),
+        discountPct
+      });
+      await tx.saleLine.update({
+        where: { id: line.id },
+        data: {
+          discountPct,
+          lineSubtotal: amounts.lineSubtotal,
+          lineTotal: amounts.lineTotal
+        }
+      });
+    }
+  }
 }
+
+async function createSaleLinePiecesTx(
+  tx: MinimalSalesTx,
+  saleLineId: string,
+  input: { quantity: number; requestedWidthM: number; requestedHeightM: number; roomAreaName: string | null }
+) {
+  if (input.quantity <= 0) return;
+  const data = Array.from({ length: input.quantity }, (_, index) => ({
+    saleLineId,
+    pieceIndex: index + 1,
+    pieceTotal: input.quantity,
+    requestedWidthM: input.requestedWidthM,
+    requestedHeightM: input.requestedHeightM,
+    roomAreaName: input.roomAreaName
+  }));
+  await tx.saleLinePiece.createMany({ data });
+}
+
+function computeLineAmounts(input: {
+  priceMethod: PriceMethod;
+  requestedHeightM: number;
+  quantity: number;
+  unitPrice: number;
+  discountPct: number;
+}) {
+  const grossSubtotal =
+    input.priceMethod === PriceMethod.TABLE_LOOKUP
+      ? round2(input.unitPrice * input.quantity)
+      : round2(input.requestedHeightM * input.quantity * input.unitPrice);
+  const lineTotal = round2(grossSubtotal * (1 - input.discountPct / 100));
+  return {
+    lineSubtotal: grossSubtotal,
+    lineTotal
+  };
+}
+
+function resolveSaleDiscount(input: {
+  manualDiscountPct?: number | null;
+  customerDiscountCode?: string | null;
+  customerDiscountPct?: number;
+}) {
+  const manualDiscountPct = normalizeDiscount(input.manualDiscountPct);
+  if (manualDiscountPct > 0) {
+    return { source: DiscountSource.MANUAL, code: null, pct: manualDiscountPct };
+  }
+  const customerDiscountPct = normalizeDiscount(input.customerDiscountPct);
+  if (customerDiscountPct > 0 && input.customerDiscountCode) {
+    return {
+      source: DiscountSource.CUSTOMER_CODE,
+      code: input.customerDiscountCode,
+      pct: customerDiscountPct
+    };
+  }
+  return { source: DiscountSource.NONE, code: null, pct: 0 };
+}
+
+function normalizeDiscount(value?: number | null) {
+  const discount = Number(value ?? 0);
+  if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+    throw new Error("El descuento debe estar entre 0 y 100.");
+  }
+  return round2(discount);
+}
+
+type MinimalSalesTx = Pick<
+  typeof prismaClient,
+  "sale" | "saleLine" | "saleLinePiece"
+>;
 
 function round2(value: number): number {
   return Number(value.toFixed(2));

@@ -17,6 +17,7 @@ import { StatusLabelsController } from "./modules/status-labels/presentation/con
 import { BranchesController } from "./modules/branches/presentation/controllers/branches.controller";
 import { QuoteItemCategoriesController } from "./modules/quote-item-categories/presentation/controllers/quote-item-categories.controller";
 import { QuoteBatchesController } from "./modules/quote-batches/presentation/controllers/quote-batches.controller";
+import { CustomersController } from "./modules/customers/presentation/controllers/customers.controller";
 
 import { GetStatusLabelsUseCase } from "./modules/status-labels/application/use-cases/get-status-labels.use-case";
 import { PrismaStatusLabelRepository } from "./modules/status-labels/infrastructure/persistence/prisma/prisma-status-label.repository";
@@ -41,7 +42,8 @@ import { PrismaBranchRepository } from "./modules/branches/infrastructure/persis
     StatusLabelsController,
     BranchesController,
     QuoteItemCategoriesController,
-    QuoteBatchesController
+    QuoteBatchesController,
+    CustomersController
   ],
   providers: [
     GetStatusLabelsUseCase,

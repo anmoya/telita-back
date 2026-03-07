@@ -99,8 +99,35 @@ export class LabelsController {
     const auth = requireAuth(authorization ?? (accessToken ? `Bearer ${accessToken}` : undefined));
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     try {
-      const buffer = await this.repo.getPdfContent(labelId);
+      const buffer = await this.repo.getHtmlContent(labelId);
       return new StreamableFile(buffer, { type: "text/html; charset=utf-8" });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
+  @Get(":labelId/html")
+  @Header("Content-Type", "text/html; charset=utf-8")
+  async getHtml(
+    @Param("labelId") labelId: string,
+    @Headers("authorization") authorization?: string,
+    @Query("accessToken") accessToken?: string
+  ) {
+    return this.getPdf(labelId, authorization, accessToken);
+  }
+
+  @Get(":labelId/zpl")
+  @Header("Content-Type", "text/plain; charset=utf-8")
+  async getZpl(
+    @Param("labelId") labelId: string,
+    @Headers("authorization") authorization?: string,
+    @Query("accessToken") accessToken?: string
+  ) {
+    const auth = requireAuth(authorization ?? (accessToken ? `Bearer ${accessToken}` : undefined));
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      const buffer = await this.repo.getZplContent(labelId);
+      return new StreamableFile(buffer, { type: "text/plain; charset=utf-8" });
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
     }
@@ -136,8 +163,37 @@ export class LabelsController {
     const labelIds = labelIdsParam ? labelIdsParam.split(",").filter(Boolean) : [];
     if (labelIds.length === 0) throw new UnprocessableEntityException("labelIds required");
     try {
-      const buffer = await this.repo.getBatchPdfContent(labelIds);
+      const buffer = await this.repo.getBatchHtmlContent(labelIds);
       return new StreamableFile(buffer, { type: "text/html; charset=utf-8" });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
+  @Get("batch-html")
+  @Header("Content-Type", "text/html; charset=utf-8")
+  async getBatchHtml(
+    @Query("labelIds") labelIdsParam: string,
+    @Headers("authorization") authorization?: string,
+    @Query("accessToken") accessToken?: string
+  ) {
+    return this.getBatchPdf(labelIdsParam, authorization, accessToken);
+  }
+
+  @Get("batch-zpl")
+  @Header("Content-Type", "text/plain; charset=utf-8")
+  async getBatchZpl(
+    @Query("labelIds") labelIdsParam: string,
+    @Headers("authorization") authorization?: string,
+    @Query("accessToken") accessToken?: string
+  ) {
+    const auth = requireAuth(authorization ?? (accessToken ? `Bearer ${accessToken}` : undefined));
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    const labelIds = labelIdsParam ? labelIdsParam.split(",").filter(Boolean) : [];
+    if (labelIds.length === 0) throw new UnprocessableEntityException("labelIds required");
+    try {
+      const buffer = await this.repo.getBatchZplContent(labelIds);
+      return new StreamableFile(buffer, { type: "text/plain; charset=utf-8" });
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
     }

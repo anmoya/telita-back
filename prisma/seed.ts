@@ -209,6 +209,39 @@ async function main() {
     });
   }
 
+  await prisma.customer.upsert({
+    where: {
+      branchId_code: {
+        branchId: branch.id,
+        code: "CLI-1"
+      }
+    },
+    create: {
+      branchId: branch.id,
+      code: "CLI-1",
+      fullName: "Cliente Demo",
+      phone: "+56911111111",
+      email: "cliente.demo@telita.local",
+      companyOrReference: "Living Demo",
+      preferredPriceListId: priceList.id,
+      discountCode: "CLIENTE10",
+      discountPct: 10,
+      notes: "Cliente de referencia para pruebas",
+      isActive: true
+    },
+    update: {
+      fullName: "Cliente Demo",
+      phone: "+56911111111",
+      email: "cliente.demo@telita.local",
+      companyOrReference: "Living Demo",
+      preferredPriceListId: priceList.id,
+      discountCode: "CLIENTE10",
+      discountPct: 10,
+      notes: "Cliente de referencia para pruebas",
+      isActive: true
+    }
+  });
+
   await prisma.priceListItem.upsert({
     where: {
       priceListId_skuId: {

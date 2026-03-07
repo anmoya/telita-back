@@ -50,34 +50,49 @@ export class CutJobsController {
       const saleLine = cutJob.saleLine;
       const sku = saleLine.sku;
       const skuWidthM = Number(sku.widthValue) * Number(sku.widthUnit.toMeterFactor);
-      const skuLengthM = Number(sku.lengthValue) * Number(sku.lengthUnit.toMeterFactor);
+      const pieces = saleLine.pieces.length > 0
+        ? saleLine.pieces
+        : Array.from({ length: saleLine.quantity }, (_, index) => ({
+            id: undefined,
+            pieceIndex: index + 1,
+            pieceTotal: saleLine.quantity,
+            requestedWidthM: saleLine.requestedWidthM,
+            requestedHeightM: saleLine.requestedHeightM,
+            roomAreaName: null
+          }));
 
-      const scrapWidthM = body.scrapWidthM ?? skuWidthM;
-      const calculatedScrapHeightM = Math.max(
-        skuLengthM - Number(saleLine.requestedHeightM) * saleLine.quantity,
-        0
-      );
-      const scrapHeightM = body.scrapHeightM ?? calculatedScrapHeightM;
+      const rules = await this.settingsRepo.getFlowRules();
+      const threshold = await this.scrapsRepo.getGlobalThresholdArea(saleLine.sale.branchId);
+      const projections = pieces
+        .map((piece) => {
+          const defaultScrapWidthM = Math.max(skuWidthM - Number(piece.requestedWidthM), 0);
+          const defaultScrapHeightM = Math.max(Number(piece.requestedHeightM), 0);
+          const scrapWidthM = body.scrapWidthM ?? defaultScrapWidthM;
+          const scrapHeightM = body.scrapHeightM ?? defaultScrapHeightM;
+          return {
+            piece,
+            scrapWidthM,
+            scrapHeightM,
+            projectedArea: scrapWidthM * scrapHeightM
+          };
+        })
+        .filter((projection) => projection.scrapWidthM > 0 && projection.scrapHeightM > 0);
 
-      let scrap = null;
-      if (scrapWidthM > 0 && scrapHeightM > 0) {
-        const rules = await this.settingsRepo.getFlowRules();
-        const threshold = await this.scrapsRepo.getGlobalThresholdArea(saleLine.sale.branchId);
-        const projectedArea = scrapWidthM * scrapHeightM;
+      const hasUsefulScrap = projections.some((projection) => projection.projectedArea >= threshold);
+      if (rules.scrapRequiredAtStage === "AT_CUT" && hasUsefulScrap && !body.locationCode) {
+        throw new Error("Existen retazos útiles por pieza que requieren ubicación al cerrar corte.");
+      }
 
-        if (rules.scrapRequiredAtStage === "AT_CUT" && projectedArea >= threshold && !body.locationCode) {
-          throw new Error(
-            `Retazo util (${projectedArea.toFixed(2)} m²) requiere ubicacion al cerrar corte. Proporcione locationCode en el cuerpo de la solicitud.`
-          );
-        }
-
-        scrap = await this.scrapsRepo.registerFromCutJob({
+      const scraps = [];
+      for (const projection of projections) {
+        let scrap = await this.scrapsRepo.registerFromCutJob({
           cutJobId: cutJob.id,
           saleLineId: saleLine.id,
+          saleLinePieceId: projection.piece.id,
           branchId: saleLine.sale.branchId,
           skuId: sku.id,
-          scrapWidthM,
-          scrapHeightM,
+          scrapWidthM: projection.scrapWidthM,
+          scrapHeightM: projection.scrapHeightM,
           generatedByEmail: auth.email
         });
 
@@ -88,19 +103,22 @@ export class CutJobsController {
             classifiedByEmail: auth.email
           });
         }
+
+        scraps.push({
+          id: scrap.id,
+          status: scrap.status,
+          widthM: Number(scrap.widthM),
+          heightM: Number(scrap.heightM),
+          areaM2: Number(scrap.areaM2),
+          pieceIndex: projection.piece.pieceIndex,
+          pieceTotal: projection.piece.pieceTotal
+        });
       }
 
       return {
         ok: true,
-        scrap: scrap
-          ? {
-              id: scrap.id,
-              status: scrap.status,
-              widthM: Number(scrap.widthM),
-              heightM: Number(scrap.heightM),
-              areaM2: Number(scrap.areaM2)
-            }
-          : null
+        scrap: scraps[0] ?? null,
+        scraps
       };
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");

@@ -1,0 +1,210 @@
+import { AuditAction } from "@prisma/client";
+import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
+import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
+
+export type CustomerPayload = {
+  branchCode: string;
+  fullName: string;
+  phone?: string | null;
+  email?: string | null;
+  companyOrReference?: string | null;
+  preferredPriceListName?: string | null;
+  discountCode?: string | null;
+  discountPct?: number;
+  notes?: string | null;
+};
+
+export class PrismaCustomersRepository {
+  private readonly auditRepo = new PrismaAuditRepository();
+
+  async list(params: { branchCode: string; q?: string; isActive?: boolean }) {
+    return prismaClient.customer.findMany({
+      where: {
+        branch: { code: params.branchCode },
+        isActive: params.isActive,
+        OR: params.q
+          ? [
+              { fullName: { contains: params.q, mode: "insensitive" } },
+              { code: { contains: params.q, mode: "insensitive" } },
+              { companyOrReference: { contains: params.q, mode: "insensitive" } },
+              { discountCode: { contains: params.q, mode: "insensitive" } }
+            ]
+          : undefined
+      },
+      include: {
+        preferredPriceList: { select: { name: true } }
+      },
+      orderBy: [{ fullName: "asc" }]
+    });
+  }
+
+  async findById(id: string) {
+    return prismaClient.customer.findUnique({
+      where: { id },
+      include: {
+        branch: { select: { code: true, name: true } },
+        preferredPriceList: { select: { id: true, name: true } }
+      }
+    });
+  }
+
+  async create(input: CustomerPayload, actorUserId: string) {
+    const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
+    if (!branch) throw new Error("Sucursal no encontrada.");
+
+    const preferredPriceListId = await resolvePreferredPriceListId(branch.id, input.preferredPriceListName);
+    const code = await this.getNextCustomerCode(branch.id);
+
+    const customer = await prismaClient.customer.create({
+      data: {
+        branchId: branch.id,
+        code,
+        fullName: input.fullName.trim(),
+        phone: normalizeNullable(input.phone),
+        email: normalizeNullable(input.email),
+        companyOrReference: normalizeNullable(input.companyOrReference),
+        preferredPriceListId,
+        discountCode: normalizeUpperNullable(input.discountCode),
+        discountPct: normalizeDiscount(input.discountPct),
+        notes: normalizeNullable(input.notes)
+      },
+      include: { preferredPriceList: { select: { name: true } } }
+    });
+
+    await this.auditRepo.log({
+      branchId: branch.id,
+      actorUserId,
+      entityType: "customer",
+      entityId: customer.id,
+      action: AuditAction.CREATE,
+      afterJson: {
+        code: customer.code,
+        fullName: customer.fullName,
+        discountCode: customer.discountCode,
+        discountPct: Number(customer.discountPct)
+      }
+    });
+
+    return customer;
+  }
+
+  async update(id: string, input: Partial<Omit<CustomerPayload, "branchCode">>, actorUserId: string) {
+    const existing = await prismaClient.customer.findUnique({ where: { id } });
+    if (!existing) throw new Error("Cliente no encontrado.");
+
+    const preferredPriceListId =
+      input.preferredPriceListName === undefined
+        ? existing.preferredPriceListId
+        : await resolvePreferredPriceListId(existing.branchId, input.preferredPriceListName);
+
+    const customer = await prismaClient.customer.update({
+      where: { id },
+      data: {
+        fullName: input.fullName ? input.fullName.trim() : existing.fullName,
+        phone: input.phone !== undefined ? normalizeNullable(input.phone) : undefined,
+        email: input.email !== undefined ? normalizeNullable(input.email) : undefined,
+        companyOrReference:
+          input.companyOrReference !== undefined ? normalizeNullable(input.companyOrReference) : undefined,
+        preferredPriceListId,
+        discountCode: input.discountCode !== undefined ? normalizeUpperNullable(input.discountCode) : undefined,
+        discountPct: input.discountPct !== undefined ? normalizeDiscount(input.discountPct) : undefined,
+        notes: input.notes !== undefined ? normalizeNullable(input.notes) : undefined
+      },
+      include: { preferredPriceList: { select: { name: true } } }
+    });
+
+    await this.auditRepo.log({
+      branchId: existing.branchId,
+      actorUserId,
+      entityType: "customer",
+      entityId: existing.id,
+      action: AuditAction.UPDATE,
+      beforeJson: {
+        fullName: existing.fullName,
+        phone: existing.phone,
+        email: existing.email,
+        companyOrReference: existing.companyOrReference,
+        preferredPriceListId: existing.preferredPriceListId,
+        discountCode: existing.discountCode,
+        discountPct: Number(existing.discountPct),
+        notes: existing.notes
+      },
+      afterJson: {
+        fullName: customer.fullName,
+        phone: customer.phone,
+        email: customer.email,
+        companyOrReference: customer.companyOrReference,
+        preferredPriceListName: customer.preferredPriceList?.name ?? null,
+        discountCode: customer.discountCode,
+        discountPct: Number(customer.discountPct),
+        notes: customer.notes
+      }
+    });
+
+    return customer;
+  }
+
+  async setStatus(id: string, isActive: boolean, actorUserId: string) {
+    const existing = await prismaClient.customer.findUnique({ where: { id } });
+    if (!existing) throw new Error("Cliente no encontrado.");
+
+    const customer = await prismaClient.customer.update({
+      where: { id },
+      data: { isActive }
+    });
+
+    await this.auditRepo.log({
+      branchId: existing.branchId,
+      actorUserId,
+      entityType: "customer",
+      entityId: existing.id,
+      action: AuditAction.STATUS_CHANGE,
+      beforeJson: { isActive: existing.isActive },
+      afterJson: { isActive: customer.isActive }
+    });
+
+    return customer;
+  }
+
+  private async getNextCustomerCode(branchId: string): Promise<string> {
+    const last = await prismaClient.customer.findMany({
+      where: { branchId, code: { startsWith: "CLI-" } },
+      select: { code: true },
+      orderBy: { createdAt: "desc" },
+      take: 50
+    });
+    const maxNumber = last.reduce((acc, row) => {
+      const value = Number(row.code.replace("CLI-", ""));
+      return Number.isFinite(value) ? Math.max(acc, value) : acc;
+    }, 0);
+    return `CLI-${maxNumber + 1}`;
+  }
+}
+
+async function resolvePreferredPriceListId(branchId: string, preferredPriceListName?: string | null) {
+  if (!preferredPriceListName) return null;
+  const priceList = await prismaClient.priceList.findFirst({
+    where: { branchId, name: preferredPriceListName, isActive: true },
+    select: { id: true }
+  });
+  if (!priceList) throw new Error("Lista de precios preferida no encontrada.");
+  return priceList.id;
+}
+
+function normalizeNullable(value?: string | null) {
+  const normalized = value?.trim();
+  return normalized ? normalized : null;
+}
+
+function normalizeUpperNullable(value?: string | null) {
+  const normalized = value?.trim().toUpperCase();
+  return normalized ? normalized : null;
+}
+
+function normalizeDiscount(value?: number) {
+  const discount = Number(value ?? 0);
+  if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+    throw new Error("discountPct debe estar entre 0 y 100.");
+  }
+  return discount;
+}

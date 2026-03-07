@@ -168,6 +168,7 @@ export class PrismaScrapsRepository {
   async registerFromCutJob(input: {
     cutJobId: string;
     saleLineId: string;
+    saleLinePieceId?: string;
     branchId: string;
     skuId: string;
     scrapWidthM: number;
@@ -187,6 +188,7 @@ export class PrismaScrapsRepository {
         skuId: input.skuId,
         cutJobId: input.cutJobId,
         saleLineId: input.saleLineId,
+        saleLinePieceId: input.saleLinePieceId,
         widthM: input.scrapWidthM,
         heightM: input.scrapHeightM,
         areaM2: area,
@@ -203,6 +205,7 @@ export class PrismaScrapsRepository {
       afterJson: {
         cutJobId: input.cutJobId,
         saleLineId: input.saleLineId,
+        saleLinePieceId: input.saleLinePieceId ?? null,
         status: scrap.status,
         areaM2: Number(scrap.areaM2)
       }

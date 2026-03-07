@@ -72,6 +72,12 @@ enum AuditAction {
   PRINT
 }
 
+enum DiscountSource {
+  NONE
+  CUSTOMER_CODE
+  MANUAL
+}
+
 model Brand {
   id        String   @id @default(uuid()) @db.Uuid
   name      String   @unique @db.VarChar(120)
@@ -98,6 +104,7 @@ model Branch {
   skus                 FabricSku[]
   priceLists           PriceList[]
   sales                Sale[]
+  customers            Customer[]
   quotes               Quote[]
   storageLocations     StorageLocation[]
   scraps               Scrap[]
@@ -250,8 +257,35 @@ model PriceList {
   sales        Sale[]
   quotes       Quote[]
   quoteBatches QuoteBatch[]
+  customers    Customer[]
 
   @@map("price_list")
+}
+
+model Customer {
+  id                  String    @id @default(uuid()) @db.Uuid
+  branchId            String    @map("branch_id") @db.Uuid
+  code                String    @db.VarChar(30)
+  fullName            String    @map("full_name") @db.VarChar(160)
+  phone               String?   @db.VarChar(40)
+  email               String?   @db.VarChar(160)
+  companyOrReference  String?   @map("company_or_reference") @db.VarChar(160)
+  preferredPriceListId String?  @map("preferred_price_list_id") @db.Uuid
+  discountCode        String?   @map("discount_code") @db.VarChar(40)
+  discountPct         Decimal   @default(0) @map("discount_pct") @db.Decimal(5, 2)
+  notes               String?
+  isActive            Boolean   @default(true) @map("is_active")
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  branch             Branch     @relation(fields: [branchId], references: [id])
+  preferredPriceList PriceList? @relation(fields: [preferredPriceListId], references: [id])
+  sales              Sale[]
+
+  @@unique([branchId, code])
+  @@unique([branchId, discountCode])
+  @@index([branchId, fullName, isActive])
+  @@map("customer")
 }
 
 model PriceListItem {
@@ -320,11 +354,17 @@ model Sale {
   branchId        String    @map("branch_id") @db.Uuid
   createdBy       String    @map("created_by") @db.Uuid
   quoteNumber     Int       @default(0) @map("quote_number")
+  customerId      String?   @map("customer_id") @db.Uuid
   customerName    String?   @map("customer_name") @db.VarChar(160)
   customerReference String? @map("customer_reference") @db.VarChar(120)
   status          SaleStatus
   priceListId     String    @map("price_list_id") @db.Uuid
   currencyCode    String    @map("currency_code") @db.Char(3)
+  manualDiscountPct Decimal @default(0) @map("manual_discount_pct") @db.Decimal(5, 2)
+  manualDiscountReason String? @map("manual_discount_reason") @db.VarChar(240)
+  discountSource  DiscountSource @default(NONE) @map("discount_source")
+  discountCodeApplied String? @map("discount_code_applied") @db.VarChar(40)
+  discountPctApplied Decimal @default(0) @map("discount_pct_applied") @db.Decimal(5, 2)
   subtotalAmount  Decimal   @default(0) @map("subtotal_amount") @db.Decimal(14, 2)
   taxAmount       Decimal   @default(0) @map("tax_amount") @db.Decimal(14, 2)
   totalAmount     Decimal   @default(0) @map("total_amount") @db.Decimal(14, 2)
@@ -336,6 +376,7 @@ model Sale {
 
   branch      Branch    @relation(fields: [branchId], references: [id])
   createdByUser AppUser @relation("SaleCreatedBy", fields: [createdBy], references: [id])
+  customer    Customer? @relation(fields: [customerId], references: [id])
   priceList   PriceList @relation(fields: [priceListId], references: [id])
   currency    Currency  @relation(fields: [currencyCode], references: [code])
   lines       SaleLine[]
@@ -413,6 +454,7 @@ model SaleLine {
   categoryId       String?   @map("category_id") @db.Uuid
   displayOrder     Int       @default(0) @map("display_order")
   lineNote         String?   @map("line_note") @db.VarChar(240)
+  roomAreaName     String?   @map("room_area_name") @db.VarChar(120)
   requestedWidthM  Decimal   @map("requested_width_m") @db.Decimal(12, 3)
   requestedHeightM Decimal   @map("requested_height_m") @db.Decimal(12, 3)
   quantity         Int
@@ -431,9 +473,30 @@ model SaleLine {
   scraps      Scrap[]
   labels      Label[]
   allocations SaleLineScrapAllocation[]
+  pieces      SaleLinePiece[]
 
   @@index([saleId])
   @@map("sale_line")
+}
+
+model SaleLinePiece {
+  id               String    @id @default(uuid()) @db.Uuid
+  saleLineId       String    @map("sale_line_id") @db.Uuid
+  pieceIndex       Int       @map("piece_index")
+  pieceTotal       Int       @map("piece_total")
+  requestedWidthM  Decimal   @map("requested_width_m") @db.Decimal(12, 3)
+  requestedHeightM Decimal   @map("requested_height_m") @db.Decimal(12, 3)
+  roomAreaName     String?   @map("room_area_name") @db.VarChar(120)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  saleLine SaleLine @relation(fields: [saleLineId], references: [id], onDelete: Cascade)
+  labels   Label[]
+  scraps   Scrap[]
+
+  @@unique([saleLineId, pieceIndex])
+  @@index([saleLineId])
+  @@map("sale_line_piece")
 }
 
 model CutJob {
@@ -477,6 +540,7 @@ model Scrap {
   skuId         String      @map("sku_id") @db.Uuid
   quoteId       String?     @map("quote_id") @db.Uuid
   saleLineId    String?     @map("sale_line_id") @db.Uuid
+  saleLinePieceId String?   @map("sale_line_piece_id") @db.Uuid
   cutJobId      String?     @map("cut_job_id") @db.Uuid
   widthM        Decimal     @map("width_m") @db.Decimal(12, 3)
   heightM       Decimal     @map("height_m") @db.Decimal(12, 3)
@@ -493,6 +557,7 @@ model Scrap {
   sku               FabricSku        @relation(fields: [skuId], references: [id])
   quote             Quote?           @relation(fields: [quoteId], references: [id])
   saleLine          SaleLine?        @relation(fields: [saleLineId], references: [id])
+  saleLinePiece     SaleLinePiece?   @relation(fields: [saleLinePieceId], references: [id])
   cutJob            CutJob?          @relation(fields: [cutJobId], references: [id])
   location          StorageLocation? @relation(fields: [locationId], references: [id])
   generatedByUser   AppUser          @relation("ScrapGeneratedBy", fields: [generatedBy], references: [id])
@@ -511,6 +576,7 @@ model Label {
   type        LabelType
   quoteId     String?       @map("quote_id") @db.Uuid
   saleLineId  String?       @map("sale_line_id") @db.Uuid
+  saleLinePieceId String?   @map("sale_line_piece_id") @db.Uuid
   scrapId     String?       @map("scrap_id") @db.Uuid
   payloadJson Json          @map("payload_json")
   codeType    LabelCodeType @default(QR) @map("code_type")
@@ -521,6 +587,7 @@ model Label {
   branch        Branch       @relation(fields: [branchId], references: [id])
   quote         Quote?       @relation(fields: [quoteId], references: [id])
   saleLine      SaleLine?    @relation(fields: [saleLineId], references: [id])
+  saleLinePiece SaleLinePiece? @relation(fields: [saleLinePieceId], references: [id])
   scrap         Scrap?       @relation(fields: [scrapId], references: [id])
   createdByUser AppUser      @relation("LabelCreatedBy", fields: [createdBy], references: [id])
   printEvents   LabelPrintEvent[]
