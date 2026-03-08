@@ -301,7 +301,7 @@ export class PrismaSalesRepository {
     });
   }
 
-  async confirm(saleId: string, rules?: { scrapRequiredAtStage?: string }) {
+  async confirm(saleId: string) {
     const sale = await prismaClient.sale.findUnique({
       where: { id: saleId },
       include: {
@@ -316,16 +316,6 @@ export class PrismaSalesRepository {
     
     if (!sale.customerId) {
       throw new Error("Debe seleccionar un cliente del maestro para confirmar la venta.");
-    }
-
-    if (rules?.scrapRequiredAtStage === "AT_SALE_CLOSE") {
-      const lineIds = sale.lines.map((l) => l.id);
-      const pendingScrap = await prismaClient.scrap.findFirst({
-        where: { saleLineId: { in: lineIds }, status: ScrapStatus.PENDING_STORAGE }
-      });
-      if (pendingScrap) {
-        throw new Error("Existen retazos pendientes de almacenamiento. Asigne ubicacion antes de confirmar la venta.");
-      }
     }
 
     await prismaClient.$transaction(async (tx) => {

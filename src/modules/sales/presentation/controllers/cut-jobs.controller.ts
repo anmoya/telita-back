@@ -39,7 +39,14 @@ export class CutJobsController {
   @Post(":cutJobId/mark-cut")
   async markCut(
     @Param("cutJobId") cutJobId: string,
-    @Body() body: { scrapWidthM?: number; scrapHeightM?: number; locationCode?: string },
+    @Body()
+    body: {
+      scrapWidthM?: number;
+      scrapHeightM?: number;
+      defaultLocationCode?: string;
+      locationCode?: string;
+      pieceLocations?: Array<{ saleLinePieceId?: string; pieceIndex?: number; locationCode: string }>;
+    },
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -61,8 +68,13 @@ export class CutJobsController {
             roomAreaName: null
           }));
 
-      const rules = await this.settingsRepo.getFlowRules();
-      const threshold = await this.scrapsRepo.getGlobalThresholdArea(saleLine.sale.branchId);
+      const scrapPolicy = await this.settingsRepo.getScrapPolicy();
+      const defaultLocationCode = body.defaultLocationCode ?? body.locationCode;
+      const pieceLocations = new Map<string, string>();
+      for (const item of body.pieceLocations ?? []) {
+        if (item.saleLinePieceId) pieceLocations.set(item.saleLinePieceId, item.locationCode);
+        else if (typeof item.pieceIndex === "number") pieceLocations.set(`piece:${item.pieceIndex}`, item.locationCode);
+      }
       const projections = pieces
         .map((piece) => {
           const defaultScrapWidthM = Math.max(skuWidthM - Number(piece.requestedWidthM), 0);
@@ -72,20 +84,19 @@ export class CutJobsController {
           return {
             piece,
             scrapWidthM,
-            scrapHeightM,
-            projectedArea: scrapWidthM * scrapHeightM
+            scrapHeightM
           };
         })
         .filter((projection) => projection.scrapWidthM > 0 && projection.scrapHeightM > 0);
 
-      const hasUsefulScrap = projections.some((projection) => projection.projectedArea >= threshold);
-      if (rules.scrapRequiredAtStage === "AT_CUT" && hasUsefulScrap && !body.locationCode) {
-        throw new Error("Existen retazos útiles por pieza que requieren ubicación al cerrar corte.");
-      }
-
       const scraps = [];
       for (const projection of projections) {
-        let scrap = await this.scrapsRepo.registerFromCutJob({
+        const locationCode =
+          (projection.piece.id ? pieceLocations.get(projection.piece.id) : undefined)
+          ?? pieceLocations.get(`piece:${projection.piece.pieceIndex}`)
+          ?? defaultLocationCode;
+
+        const scrap = await this.scrapsRepo.registerFromCutJob({
           cutJobId: cutJob.id,
           saleLineId: saleLine.id,
           saleLinePieceId: projection.piece.id,
@@ -93,16 +104,10 @@ export class CutJobsController {
           skuId: sku.id,
           scrapWidthM: projection.scrapWidthM,
           scrapHeightM: projection.scrapHeightM,
-          generatedByEmail: auth.email
+          generatedByEmail: auth.email,
+          locationPolicy: scrapPolicy.locationPolicy,
+          locationCode
         });
-
-        if (body.locationCode && scrap.status === "PENDING_STORAGE") {
-          scrap = await this.scrapsRepo.assignLocation({
-            scrapId: scrap.id,
-            locationCode: body.locationCode,
-            classifiedByEmail: auth.email
-          });
-        }
 
         scraps.push({
           id: scrap.id,
@@ -110,6 +115,8 @@ export class CutJobsController {
           widthM: Number(scrap.widthM),
           heightM: Number(scrap.heightM),
           areaM2: Number(scrap.areaM2),
+          locationCode: locationCode ?? null,
+          isUseful: scrap.isUseful,
           pieceIndex: projection.piece.pieceIndex,
           pieceTotal: projection.piece.pieceTotal
         });
@@ -118,6 +125,7 @@ export class CutJobsController {
       return {
         ok: true,
         scrap: scraps[0] ?? null,
+        locationPolicy: scrapPolicy.locationPolicy,
         scraps
       };
     } catch (error) {

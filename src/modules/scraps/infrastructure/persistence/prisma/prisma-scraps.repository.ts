@@ -1,9 +1,12 @@
 import { AuditAction, ScrapStatus } from "@prisma/client";
 import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
+import { PrismaSettingsRepository } from "../../../../settings/infrastructure/persistence/prisma/prisma-settings.repository";
+import { evaluateScrapRule, type ScrapLocationPolicy, type ScrapRuleContext } from "../../../domain/scrap-policy";
 
 export class PrismaScrapsRepository {
   private readonly auditRepo = new PrismaAuditRepository();
+  private readonly settingsRepo = new PrismaSettingsRepository();
 
   async registerFromQuote(input: { quoteId: string; generatedByEmail: string }) {
     const quote = await prismaClient.quote.findUnique({
@@ -23,26 +26,28 @@ export class PrismaScrapsRepository {
     if (!generatedBy) throw new Error("Usuario no encontrado.");
 
     const skuWidthM = Number(quote.sku.widthValue) * Number(quote.sku.widthUnit.toMeterFactor);
-    const skuLengthM = Number(quote.sku.lengthValue) * Number(quote.sku.lengthUnit.toMeterFactor);
-    const skuArea = skuWidthM * skuLengthM;
-
-    const requestedArea =
-      Number(quote.requestedWidthM) * Number(quote.requestedHeightM) * Number(quote.quantity);
-
-    const scrapArea = Math.max(skuArea - requestedArea, 0);
-    const scrapHeight = skuWidthM > 0 ? scrapArea / skuWidthM : 0;
-
-    const threshold = await this.getGlobalThresholdArea(quote.branchId);
-    const status = scrapArea >= threshold && scrapArea > 0 ? ScrapStatus.PENDING_STORAGE : ScrapStatus.DISCARDED;
+    const scrapWidthM = Math.max(skuWidthM - Number(quote.requestedWidthM), 0);
+    const scrapHeightM = Math.max(Number(quote.requestedHeightM), 0);
+    const areaM2 = round3(scrapWidthM * scrapHeightM);
+    const policy = await this.settingsRepo.getScrapPolicy();
+    const context = buildScrapRuleContext({
+      scrapWidthM,
+      scrapHeightM,
+      skuWidthM,
+      skuLengthM: Number(quote.sku.lengthValue) * Number(quote.sku.lengthUnit.toMeterFactor),
+      skuThicknessM: 0
+    });
+    const isUseful = scrapWidthM > 0 && scrapHeightM > 0 && evaluateScrapRule(policy.classificationRule, context);
+    const status = isUseful ? ScrapStatus.PENDING_INBOUND : ScrapStatus.DISCARDED;
 
     const scrap = await prismaClient.scrap.create({
       data: {
         branchId: quote.branchId,
         skuId: quote.skuId,
         quoteId: quote.id,
-        widthM: skuWidthM,
-        heightM: scrapHeight,
-        areaM2: scrapArea,
+        widthM: scrapWidthM,
+        heightM: scrapHeightM,
+        areaM2,
         status,
         generatedBy: generatedBy.id
       }
@@ -56,7 +61,8 @@ export class PrismaScrapsRepository {
       afterJson: {
         quoteId: quote.id,
         status: scrap.status,
-        areaM2: Number(scrap.areaM2)
+        areaM2: Number(scrap.areaM2),
+        isUseful
       }
     });
 
@@ -174,13 +180,47 @@ export class PrismaScrapsRepository {
     scrapWidthM: number;
     scrapHeightM: number;
     generatedByEmail: string;
+    locationPolicy: ScrapLocationPolicy;
+    locationCode?: string;
   }) {
     const user = await prismaClient.appUser.findUnique({ where: { email: input.generatedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
-    const area = round2(input.scrapWidthM * input.scrapHeightM);
-    const threshold = await this.getGlobalThresholdArea(input.branchId);
-    const status = area >= threshold && area > 0 ? ScrapStatus.PENDING_STORAGE : ScrapStatus.DISCARDED;
+    const sku = await prismaClient.fabricSku.findUnique({
+      where: { id: input.skuId },
+      include: { widthUnit: true, lengthUnit: true, thicknessUnit: true }
+    });
+    if (!sku) throw new Error("SKU no encontrado.");
+
+    const area = round3(input.scrapWidthM * input.scrapHeightM);
+    const policy = await this.settingsRepo.getScrapPolicy();
+    const context = buildScrapRuleContext({
+      scrapWidthM: input.scrapWidthM,
+      scrapHeightM: input.scrapHeightM,
+      skuWidthM: Number(sku.widthValue) * Number(sku.widthUnit.toMeterFactor),
+      skuLengthM: Number(sku.lengthValue) * Number(sku.lengthUnit.toMeterFactor),
+      skuThicknessM: Number(sku.thicknessValue) * Number(sku.thicknessUnit.toMeterFactor)
+    });
+    const isUseful = input.scrapWidthM > 0 && input.scrapHeightM > 0 && evaluateScrapRule(policy.classificationRule, context);
+    const shouldStoreNow = isUseful && input.locationPolicy === "AT_CUT_REQUIRE_LOCATION";
+
+    let locationId: string | undefined;
+    if (shouldStoreNow) {
+      if (!input.locationCode) {
+        throw new Error("Debe indicar una ubicacion al cerrar el corte para retazos utiles.");
+      }
+      const location = await prismaClient.storageLocation.findFirst({
+        where: { branchId: input.branchId, code: input.locationCode, isActive: true }
+      });
+      if (!location) throw new Error("Ubicación no encontrada.");
+      locationId = location.id;
+    }
+
+    const status = !isUseful
+      ? ScrapStatus.DISCARDED
+      : shouldStoreNow
+        ? ScrapStatus.STORED
+        : ScrapStatus.PENDING_INBOUND;
 
     const scrap = await prismaClient.scrap.create({
       data: {
@@ -193,7 +233,10 @@ export class PrismaScrapsRepository {
         heightM: input.scrapHeightM,
         areaM2: area,
         status,
-        generatedBy: user.id
+        locationId,
+        generatedBy: user.id,
+        classifiedBy: shouldStoreNow ? user.id : undefined,
+        classifiedAt: shouldStoreNow ? new Date() : undefined
       }
     });
     await this.auditRepo.log({
@@ -207,28 +250,13 @@ export class PrismaScrapsRepository {
         saleLineId: input.saleLineId,
         saleLinePieceId: input.saleLinePieceId ?? null,
         status: scrap.status,
-        areaM2: Number(scrap.areaM2)
+        areaM2: Number(scrap.areaM2),
+        isUseful,
+        locationPolicy: input.locationPolicy,
+        locationId: scrap.locationId ?? null
       }
     });
-    return scrap;
-  }
-
-  async getGlobalThresholdArea(branchId: string): Promise<number> {
-    const skus = await prismaClient.fabricSku.findMany({
-      where: { branchId, isActive: true },
-      include: { widthUnit: true, lengthUnit: true }
-    });
-
-    const areas = skus
-      .map((sku) => {
-        const widthM = Number(sku.widthValue) * Number(sku.widthUnit.toMeterFactor);
-        const lengthM = Number(sku.lengthValue) * Number(sku.lengthUnit.toMeterFactor);
-        return widthM * lengthM;
-      })
-      .filter((area) => area > 0);
-
-    if (areas.length === 0) return 0;
-    return Math.min(...areas);
+    return { ...scrap, isUseful };
   }
 
   async list(params: { branchCode?: string; status?: string }) {
@@ -302,7 +330,7 @@ export class PrismaScrapsRepository {
     const skip = (safePage - 1) * safeLimit;
 
     const where = { branchId: branch.id };
-    const scrapWhere = { status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.STORED] } };
+    const scrapWhere = { status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.PENDING_INBOUND, ScrapStatus.STORED] } };
 
     const [locations, total] = await Promise.all([
       prismaClient.storageLocation.findMany({
@@ -334,7 +362,7 @@ export class PrismaScrapsRepository {
   async updateStorageLocation(id: string, input: { code?: string; description?: string; actorEmail: string }) {
     const existing = await prismaClient.storageLocation.findUnique({
       where: { id },
-      include: { scraps: { where: { status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.STORED] } } } }
+      include: { scraps: { where: { status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.PENDING_INBOUND, ScrapStatus.STORED] } } } }
     });
     if (!existing) throw new Error("Ubicación no encontrada.");
 
@@ -387,7 +415,7 @@ export class PrismaScrapsRepository {
   async deleteStorageLocation(id: string, actorEmail: string) {
     const existing = await prismaClient.storageLocation.findUnique({
       where: { id },
-      include: { scraps: { where: { status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.STORED] } } } }
+      include: { scraps: { where: { status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.PENDING_INBOUND, ScrapStatus.STORED] } } } }
     });
     if (!existing) throw new Error("Ubicación no encontrada.");
 
@@ -426,7 +454,7 @@ export class PrismaScrapsRepository {
       const activeCount = await prismaClient.scrap.count({
         where: {
           locationId: id,
-          status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.STORED] }
+          status: { in: [ScrapStatus.PENDING_CLASSIFICATION, ScrapStatus.PENDING_STORAGE, ScrapStatus.PENDING_INBOUND, ScrapStatus.STORED] }
         }
       });
       if (activeCount > 0) {
@@ -464,8 +492,8 @@ export class PrismaScrapsRepository {
     });
     if (!location) throw new Error("Ubicación no encontrada.");
 
-    if (scrap.status !== ScrapStatus.PENDING_STORAGE) {
-      throw new Error("Solo los retazos en estado PENDIENTE DE ALMACENAMIENTO pueden ser asignados.");
+    if (scrap.status !== ScrapStatus.PENDING_STORAGE && scrap.status !== ScrapStatus.PENDING_INBOUND) {
+      throw new Error("Solo los retazos en estado pendiente pueden ser asignados.");
     }
 
     const updated = await prismaClient.scrap.update({
@@ -664,8 +692,8 @@ export class PrismaScrapsRepository {
   }
 }
 
-function round2(value: number): number {
-  return Number(value.toFixed(2));
+function round3(value: number): number {
+  return Number(value.toFixed(3));
 }
 
 function parseScrapStatus(value?: string): ScrapStatus | undefined {
@@ -675,10 +703,30 @@ function parseScrapStatus(value?: string): ScrapStatus | undefined {
     ScrapStatus.PENDING_CLASSIFICATION,
     ScrapStatus.DISCARDED,
     ScrapStatus.PENDING_STORAGE,
+    ScrapStatus.PENDING_INBOUND,
     ScrapStatus.STORED,
     ScrapStatus.USED
   ];
   return allowed.includes(normalized as ScrapStatus) ? (normalized as ScrapStatus) : undefined;
+}
+
+function buildScrapRuleContext(input: {
+  scrapWidthM: number;
+  scrapHeightM: number;
+  skuWidthM: number;
+  skuLengthM: number;
+  skuThicknessM: number;
+}): ScrapRuleContext {
+  const scrapWidthCm = round3(input.scrapWidthM * 100);
+  const scrapHeightCm = round3(input.scrapHeightM * 100);
+  return {
+    scrap_width_cm: scrapWidthCm,
+    scrap_height_cm: scrapHeightCm,
+    scrap_area_cm2: round3(scrapWidthCm * scrapHeightCm),
+    sku_width_cm: round3(input.skuWidthM * 100),
+    sku_length_cm: round3(input.skuLengthM * 100),
+    sku_thickness_cm: round3(input.skuThicknessM * 100)
+  };
 }
 
 function generateFixedRows(rowStart: string, rowEnd: string): string[] {

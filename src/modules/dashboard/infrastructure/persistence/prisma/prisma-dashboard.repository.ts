@@ -21,7 +21,7 @@ export class PrismaDashboardRepository {
         prismaClient.sale.count({
           where: { branchId: branch.id, status: SaleStatus.CANCELED, createdAt: { gte: from, lt: to } }
         }),
-        prismaClient.scrap.count({ where: { branchId: branch.id, status: ScrapStatus.PENDING_STORAGE } }),
+        prismaClient.scrap.count({ where: { branchId: branch.id, status: ScrapStatus.PENDING_INBOUND } }),
         prismaClient.labelPrintEvent.count({
           where: {
             printedAt: { gte: from, lt: to },
@@ -45,7 +45,7 @@ export class PrismaDashboardRepository {
     return prismaClient.scrap.findMany({
       where: {
         branch: { code: input.branchCode },
-        status: ScrapStatus.PENDING_STORAGE
+        status: ScrapStatus.PENDING_INBOUND
       },
       include: {
         sku: { select: { code: true, name: true } },

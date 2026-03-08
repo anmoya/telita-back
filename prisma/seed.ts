@@ -336,6 +336,58 @@ async function main() {
     }
   });
 
+  await prisma.systemSetting.upsert({
+    where: { key: "global_scrap_threshold_m2" },
+    create: {
+      key: "global_scrap_threshold_m2",
+      valueJson: 0.75,
+      updatedBy: user.id,
+      updatedAt: new Date()
+    },
+    update: {
+      valueJson: 0.75,
+      updatedBy: user.id,
+      updatedAt: new Date()
+    }
+  });
+
+  await prisma.systemSetting.upsert({
+    where: { key: "scrap_policy" },
+    create: {
+      key: "scrap_policy",
+      valueJson: {
+        classificationRule: {
+          version: 1,
+          kind: "predicate",
+          expression: {
+            op: "gte",
+            left: { var: "scrap_width_cm" },
+            right: { const: 50 }
+          }
+        },
+        locationPolicy: "AT_CUT_REQUIRE_LOCATION"
+      },
+      updatedBy: user.id,
+      updatedAt: new Date()
+    },
+    update: {
+      valueJson: {
+        classificationRule: {
+          version: 1,
+          kind: "predicate",
+          expression: {
+            op: "gte",
+            left: { var: "scrap_width_cm" },
+            right: { const: 50 }
+          }
+        },
+        locationPolicy: "AT_CUT_REQUIRE_LOCATION"
+      },
+      updatedBy: user.id,
+      updatedAt: new Date()
+    }
+  });
+
   // Seed status labels (Spec-23)
   const statusLabelsData = [
     // Sale statuses
@@ -350,7 +402,8 @@ async function main() {
     // Scrap statuses
     { entityType: "scrap", statusCode: "PENDING_CLASSIFICATION", labelEs: "Por clasificar", descriptionEs: "Retazo generado, aún no determinado si es útil o descarte." },
     { entityType: "scrap", statusCode: "DISCARDED", labelEs: "Descartado", descriptionEs: "Retazo pequeño, no apto para reutilización." },
-    { entityType: "scrap", statusCode: "PENDING_STORAGE", labelEs: "Por almacenar", descriptionEs: "Retazo útil sin ubicación asignada aún." },
+    { entityType: "scrap", statusCode: "PENDING_STORAGE", labelEs: "Por almacenar", descriptionEs: "Estado legado para retazo útil sin ubicación asignada." },
+    { entityType: "scrap", statusCode: "PENDING_INBOUND", labelEs: "Pendiente ingreso", descriptionEs: "Retazo útil pendiente de ingreso o ubicación final." },
     { entityType: "scrap", statusCode: "STORED", labelEs: "Almacenado", descriptionEs: "Retazo disponible para uso en una venta futura." },
     { entityType: "scrap", statusCode: "USED", labelEs: "Utilizado", descriptionEs: "Retazo consumido en una venta." }
   ];

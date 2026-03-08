@@ -18,7 +18,6 @@ import {
 import { Headers } from "@nestjs/common";
 import { PrismaSalesRepository } from "../../infrastructure/persistence/prisma/prisma-sales.repository";
 import { PrismaScrapsRepository } from "../../../scraps/infrastructure/persistence/prisma/prisma-scraps.repository";
-import { PrismaSettingsRepository } from "../../../settings/infrastructure/persistence/prisma/prisma-settings.repository";
 import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
 import { prismaClient } from "../../../../shared/infrastructure/persistence/prisma-client";
 
@@ -26,7 +25,6 @@ import { prismaClient } from "../../../../shared/infrastructure/persistence/pris
 export class SalesController {
   private readonly repo = new PrismaSalesRepository();
   private readonly scrapsRepo = new PrismaScrapsRepository();
-  private readonly settingsRepo = new PrismaSettingsRepository();
 
   @Post("from-quote")
   @HttpCode(HttpStatus.OK)
@@ -132,8 +130,7 @@ export class SalesController {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     try {
-      const rules = await this.settingsRepo.getFlowRules();
-      await this.repo.confirm(saleId, rules);
+      await this.repo.confirm(saleId);
       return { ok: true };
     } catch (error) {
       throw new BadRequestException(getErrorMessage(error));

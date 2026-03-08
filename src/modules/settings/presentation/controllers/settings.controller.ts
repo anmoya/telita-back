@@ -3,13 +3,60 @@ import {
   PrismaSettingsRepository,
   ScrapRequiredAtStage
 } from "../../infrastructure/persistence/prisma/prisma-settings.repository";
+import {
+  buildMinWidthPolicy,
+  extractMinWidthThresholdCm,
+  parseScrapPolicy,
+  type ScrapLocationPolicy
+} from "../../../scraps/domain/scrap-policy";
 import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
 
 const VALID_STAGES: ScrapRequiredAtStage[] = ["NONE", "AT_CUT", "AT_SALE_CLOSE"];
+const VALID_LOCATION_POLICIES: ScrapLocationPolicy[] = ["AT_CUT_REQUIRE_LOCATION", "AT_CUT_ROUTE_TO_INBOUND"];
 
 @Controller("settings")
 export class SettingsController {
   private readonly repo = new PrismaSettingsRepository();
+
+  @Get("scrap-policy")
+  async getScrapPolicy(@Headers("authorization") authorization?: string) {
+    requireAuth(authorization);
+    const policy = await this.repo.getScrapPolicy();
+    return {
+      ...policy,
+      minWidthCm: extractMinWidthThresholdCm(policy)
+    };
+  }
+
+  @Put("scrap-policy")
+  async updateScrapPolicy(
+    @Body()
+    body: {
+      classificationRule?: unknown;
+      locationPolicy?: ScrapLocationPolicy;
+      minWidthCm?: number;
+    },
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin"]);
+    try {
+      const policy =
+        typeof body.minWidthCm === "number"
+          ? buildMinWidthPolicy(body.minWidthCm, normalizeLocationPolicy(body.locationPolicy))
+          : parseScrapPolicy({
+              classificationRule: body.classificationRule,
+              locationPolicy: normalizeLocationPolicy(body.locationPolicy)
+            });
+      const saved = await this.repo.updateScrapPolicy(policy, auth.email);
+      return {
+        ...saved,
+        minWidthCm: extractMinWidthThresholdCm(saved)
+      };
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
 
   @Get("flow-rules")
   async getFlowRules(@Headers("authorization") authorization?: string) {
@@ -33,4 +80,12 @@ export class SettingsController {
       throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
     }
   }
+}
+
+function normalizeLocationPolicy(input?: ScrapLocationPolicy): ScrapLocationPolicy {
+  if (!input) return "AT_CUT_REQUIRE_LOCATION";
+  if (!VALID_LOCATION_POLICIES.includes(input)) {
+    throw new BadRequestException(`locationPolicy must be one of: ${VALID_LOCATION_POLICIES.join(", ")}.`);
+  }
+  return input;
 }
