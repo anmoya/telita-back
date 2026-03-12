@@ -1,8 +1,11 @@
 import { BadRequestException, Body, Controller, Get, Headers, Put } from "@nestjs/common";
 import {
   PrismaSettingsRepository,
-  ScrapRequiredAtStage
+  ScrapRequiredAtStage,
+  type CutScrapLookupPolicy,
+  type SoftHoldPolicy
 } from "../../infrastructure/persistence/prisma/prisma-settings.repository";
+
 import {
   buildMinWidthPolicy,
   extractMinWidthThresholdCm,
@@ -58,6 +61,26 @@ export class SettingsController {
     }
   }
 
+  @Get("cut-scrap-lookup-policy")
+  async getCutScrapLookupPolicy(@Headers("authorization") authorization?: string) {
+    requireAuth(authorization);
+    return this.repo.getCutScrapLookupPolicy();
+  }
+
+  @Put("cut-scrap-lookup-policy")
+  async updateCutScrapLookupPolicy(
+    @Body() body: Partial<CutScrapLookupPolicy>,
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin"]);
+    try {
+      return await this.repo.updateCutScrapLookupPolicy(body, auth.email);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
   @Get("flow-rules")
   async getFlowRules(@Headers("authorization") authorization?: string) {
     requireAuth(authorization);
@@ -76,6 +99,26 @@ export class SettingsController {
     }
     try {
       return await this.repo.updateFlowRules({ scrapRequiredAtStage: body.scrapRequiredAtStage }, auth.email);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
+  @Get("scrap-soft-hold-policy")
+  async getSoftHoldPolicy(@Headers("authorization") authorization?: string) {
+    requireAuth(authorization);
+    return this.repo.getSoftHoldPolicy();
+  }
+
+  @Put("scrap-soft-hold-policy")
+  async updateSoftHoldPolicy(
+    @Body() body: Partial<SoftHoldPolicy>,
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin"]);
+    try {
+      return await this.repo.updateSoftHoldPolicy(body, auth.email);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
     }

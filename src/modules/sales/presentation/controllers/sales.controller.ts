@@ -15,9 +15,11 @@ import {
   StreamableFile,
   UnprocessableEntityException
 } from "@nestjs/common";
+import { AuditAction } from "@prisma/client";
 import { Headers } from "@nestjs/common";
 import { PrismaSalesRepository } from "../../infrastructure/persistence/prisma/prisma-sales.repository";
 import { PrismaScrapsRepository } from "../../../scraps/infrastructure/persistence/prisma/prisma-scraps.repository";
+import { PrismaAuditRepository } from "../../../../shared/infrastructure/persistence/prisma-audit.repository";
 import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
 import { prismaClient } from "../../../../shared/infrastructure/persistence/prisma-client";
 
@@ -25,6 +27,7 @@ import { prismaClient } from "../../../../shared/infrastructure/persistence/pris
 export class SalesController {
   private readonly repo = new PrismaSalesRepository();
   private readonly scrapsRepo = new PrismaScrapsRepository();
+  private readonly auditRepo = new PrismaAuditRepository();
 
   @Post("from-quote")
   @HttpCode(HttpStatus.OK)
@@ -295,6 +298,120 @@ export class SalesController {
     }));
   }
 
+  @Post(":saleId/compatible-scraps/offer-preview")
+  async offerPreview(
+    @Param("saleId") saleId: string,
+    @Body() body: { lineIds?: string[]; limitPerLine?: number },
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      const result = await this.scrapsRepo.matchForSaleLines({
+        saleId,
+        lineIds: body.lineIds,
+        limitPerLine: body.limitPerLine ?? 3
+      });
+
+      const user = await prismaClient.appUser.findUnique({ where: { email: auth.email } });
+      if (user) {
+        await this.auditRepo.log({
+          actorUserId: user.id,
+          entityType: "sale",
+          entityId: saleId,
+          action: AuditAction.STATUS_CHANGE,
+          afterJson: {
+            event: "SCRAP_OFFER_PREVIEW_CREATED",
+            linesChecked: result.lines.length,
+            suggestionsFound: result.lines.reduce((acc, l) => acc + l.suggestions.length, 0)
+          }
+        });
+      }
+
+      return result;
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
+  @Post(":saleId/compatible-scraps/pick-list")
+  @Header("Content-Type", "text/html; charset=utf-8")
+  async pickList(
+    @Param("saleId") saleId: string,
+    @Body() body: { items: Array<{ saleLineId: string; scrapId: string }> },
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      const sale = await prismaClient.sale.findUnique({
+        where: { id: saleId },
+        include: { branch: true, customer: true }
+      });
+      if (!sale) throw new BadRequestException("Venta no encontrada.");
+
+      const pickItems: Array<{
+        lineIndex: number;
+        skuCode: string;
+        requestedWidthM: number;
+        requestedHeightM: number;
+        scrapWidthM: number;
+        scrapHeightM: number;
+        locationCode: string;
+        labelCode: string;
+      }> = [];
+
+      for (let i = 0; i < body.items.length; i++) {
+        const item = body.items[i];
+        const line = await prismaClient.saleLine.findUnique({
+          where: { id: item.saleLineId },
+          include: { sku: true }
+        });
+        const scrap = await prismaClient.scrap.findUnique({
+          where: { id: item.scrapId },
+          include: { location: true }
+        });
+        if (!line || !scrap) continue;
+
+        const labelRecord = await prismaClient.label.findFirst({
+          where: { scrapId: scrap.id },
+          select: { id: true }
+        });
+
+        pickItems.push({
+          lineIndex: i + 1,
+          skuCode: line.sku.code,
+          requestedWidthM: Number(line.requestedWidthM),
+          requestedHeightM: Number(line.requestedHeightM),
+          scrapWidthM: Number(scrap.widthM),
+          scrapHeightM: Number(scrap.heightM),
+          locationCode: scrap.location?.code ?? "Sin ubicación",
+          labelCode: labelRecord?.id.slice(0, 8) ?? scrap.id.slice(0, 8)
+        });
+      }
+
+      const user = await prismaClient.appUser.findUnique({ where: { email: auth.email } });
+      if (user) {
+        await this.auditRepo.log({
+          actorUserId: user.id,
+          entityType: "sale",
+          entityId: saleId,
+          action: AuditAction.STATUS_CHANGE,
+          afterJson: {
+            event: "SCRAP_PICK_LIST_CREATED",
+            itemCount: pickItems.length
+          }
+        });
+      }
+
+      const html = renderPickListHtml(sale, pickItems);
+      return new StreamableFile(Buffer.from(html, "utf-8"), { type: "text/html; charset=utf-8" });
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
   @Get(":saleId/print/sale/html")
   @Header("Content-Type", "text/html; charset=utf-8")
   async printSaleHtml(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string, @Query("accessToken") accessToken?: string) {
@@ -448,4 +565,74 @@ ${totals}
 
 function zplSafe(value: unknown) {
   return String(value ?? "").replace(/[\^~]/g, " ");
+}
+
+function renderPickListHtml(
+  sale: { quoteNumber: number; customerName: string | null; customer: { fullName: string } | null },
+  items: Array<{
+    lineIndex: number;
+    skuCode: string;
+    requestedWidthM: number;
+    requestedHeightM: number;
+    scrapWidthM: number;
+    scrapHeightM: number;
+    locationCode: string;
+    labelCode: string;
+  }>
+) {
+  const rows = items.map((item) => `
+    <tr>
+      <td>${item.lineIndex}</td>
+      <td>${item.skuCode}</td>
+      <td>${item.requestedWidthM} x ${item.requestedHeightM}</td>
+      <td>${item.scrapWidthM} x ${item.scrapHeightM}</td>
+      <td class="location">${item.locationCode}</td>
+      <td>${item.labelCode}</td>
+    </tr>
+  `).join("");
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Lista de retiro - COT-${sale.quoteNumber}</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  @media print { .no-print { display: none !important; } }
+  body { font-family: Arial, sans-serif; color: #111; }
+  h1 { font-size: 20px; margin: 0 0 8px 0; }
+  .meta { margin-bottom: 16px; font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { border: 1px solid #999; padding: 10px 8px; font-size: 13px; }
+  th { background: #f4f4f4; text-align: left; }
+  .location { font-weight: bold; font-size: 16px; color: #1a5276; }
+  .actions { margin-top: 20px; text-align: center; }
+  .actions button { padding: 10px 24px; font-size: 14px; cursor: pointer; }
+</style>
+</head>
+<body>
+  <h1>Lista de retiro - COT-${sale.quoteNumber}</h1>
+  <div class="meta">
+    <p><strong>Cliente:</strong> ${sale.customer?.fullName ?? sale.customerName ?? "—"}</p>
+    <p><strong>Fecha:</strong> ${new Date().toISOString().slice(0, 10)}</p>
+    <p><strong>Piezas a buscar:</strong> ${items.length}</p>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>SKU</th>
+        <th>Medida solicitada</th>
+        <th>Medida retazo</th>
+        <th>Ubicación</th>
+        <th>Etiqueta</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <div class="actions no-print">
+    <button onclick="window.print()">Imprimir</button>
+  </div>
+</body>
+</html>`;
 }

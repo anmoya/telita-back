@@ -1,7 +1,10 @@
 import { BadRequestException, Body, Controller, Get, Headers, Param, Post, Query } from "@nestjs/common";
+import { AuditAction } from "@prisma/client";
 import { PrismaSalesRepository } from "../../infrastructure/persistence/prisma/prisma-sales.repository";
 import { PrismaScrapsRepository } from "../../../scraps/infrastructure/persistence/prisma/prisma-scraps.repository";
 import { PrismaSettingsRepository } from "../../../settings/infrastructure/persistence/prisma/prisma-settings.repository";
+import { PrismaAuditRepository } from "../../../../shared/infrastructure/persistence/prisma-audit.repository";
+import { prismaClient } from "../../../../shared/infrastructure/persistence/prisma-client";
 import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
 
 @Controller("cut-jobs")
@@ -9,6 +12,7 @@ export class CutJobsController {
   private readonly repo = new PrismaSalesRepository();
   private readonly scrapsRepo = new PrismaScrapsRepository();
   private readonly settingsRepo = new PrismaSettingsRepository();
+  private readonly auditRepo = new PrismaAuditRepository();
 
   @Get()
   async list(
@@ -34,6 +38,47 @@ export class CutJobsController {
       skuName: row.saleLine.sku.name,
       saleCreatedAt: row.saleLine.sale.createdAt.toISOString()
     }));
+  }
+
+  @Get(":cutJobId/compatible-scraps")
+  async compatibleScraps(
+    @Param("cutJobId") cutJobId: string,
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      const policy = await this.settingsRepo.getCutScrapLookupPolicy();
+      if (policy.mode === "OFF") {
+        return { policy, saleId: null, cutJobId, lines: [] };
+      }
+
+      const result = await this.scrapsRepo.matchForCutJob({
+        cutJobId,
+        scope: policy.scope,
+        maxPerLine: policy.maxSuggestionsPerLine
+      });
+
+      const user = await prismaClient.appUser.findUnique({ where: { email: auth.email } });
+      if (user) {
+        await this.auditRepo.log({
+          actorUserId: user.id,
+          entityType: "cut_job",
+          entityId: cutJobId,
+          action: AuditAction.STATUS_CHANGE,
+          afterJson: {
+            event: "CUT_COMPATIBLE_SCRAPS_CHECKED",
+            suggestionsFound: result.lines.reduce((acc, l) => acc + l.suggestions.length, 0),
+            mode: policy.mode,
+            scope: policy.scope
+          }
+        });
+      }
+
+      return { policy, ...result };
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
   }
 
   @Post(":cutJobId/mark-cut")

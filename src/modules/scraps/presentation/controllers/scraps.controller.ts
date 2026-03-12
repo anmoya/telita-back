@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
   Param,
@@ -109,6 +110,67 @@ export class ScrapsController {
         classifiedByEmail: auth.email
       });
       return { id: scrap.id, status: scrap.status, locationId: scrap.locationId };
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
+  // SPEC-58: Soft hold endpoints
+  @Post(":id/soft-hold")
+  async createSoftHold(
+    @Param("id") id: string,
+    @Body() body: { saleId: string; saleLineId?: string; minutes?: number; reason?: string },
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      const result = await this.repo.createSoftHold({
+        scrapId: id,
+        saleId: body.saleId,
+        saleLineId: body.saleLineId,
+        heldByEmail: auth.email,
+        minutes: body.minutes ?? 15,
+        reason: body.reason
+      });
+      return result;
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
+  @Get(":id/soft-hold")
+  async getActiveSoftHold(
+    @Param("id") id: string,
+    @Headers("authorization") authorization?: string
+  ) {
+    requireAuth(authorization);
+    const hold = await this.repo.getActiveSoftHold(id);
+    if (!hold) return { active: false };
+    return {
+      active: true,
+      id: hold.id,
+      scrapId: hold.scrapId,
+      saleId: hold.saleId,
+      saleLineId: hold.saleLineId,
+      status: hold.status,
+      expiresAt: hold.expiresAt.toISOString(),
+      heldBy: { email: hold.heldByUser.email, fullName: hold.heldByUser.fullName },
+      reason: hold.reason,
+      createdAt: hold.createdAt.toISOString()
+    };
+  }
+
+  @Delete(":id/soft-hold")
+  async releaseSoftHold(
+    @Param("id") id: string,
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      await this.repo.releaseSoftHold({ scrapId: id, releasedByEmail: auth.email });
+      return { ok: true };
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
     }

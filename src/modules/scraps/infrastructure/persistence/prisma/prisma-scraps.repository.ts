@@ -1,4 +1,4 @@
-import { AuditAction, ScrapStatus } from "@prisma/client";
+import { AuditAction, ScrapStatus, SoftHoldStatus } from "@prisma/client";
 import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 import { PrismaSettingsRepository } from "../../../../settings/infrastructure/persistence/prisma/prisma-settings.repository";
@@ -76,6 +76,9 @@ export class PrismaScrapsRepository {
     requestedHeightM: number;
     limit?: number;
   }) {
+    // Lazy expiration: expire stale holds before matching
+    await this.expireStaleHolds();
+
     const scraps = await prismaClient.scrap.findMany({
       where: {
         status: ScrapStatus.STORED,
@@ -83,7 +86,8 @@ export class PrismaScrapsRepository {
         sku: { code: params.skuCode },
         widthM: { gte: params.requestedWidthM },
         heightM: { gte: params.requestedHeightM },
-        allocations: { none: { isActive: true } }
+        allocations: { none: { isActive: true } },
+        softHolds: { none: { status: SoftHoldStatus.ACTIVE } }
       },
       include: { sku: true, location: true },
       take: params.limit ?? 10
@@ -93,6 +97,161 @@ export class PrismaScrapsRepository {
     return scraps
       .map((s) => ({ ...s, excessAreaM2: Number(s.areaM2) - requestedArea }))
       .sort((a, b) => a.excessAreaM2 - b.excessAreaM2);
+  }
+
+  async matchForCutJob(params: {
+    cutJobId: string;
+    scope: "CURRENT_LINE" | "ENTIRE_ORDER";
+    maxPerLine: number;
+  }) {
+    const cutJob = await prismaClient.cutJob.findUnique({
+      where: { id: params.cutJobId },
+      include: {
+        saleLine: {
+          include: {
+            sku: true,
+            sale: {
+              include: {
+                branch: true,
+                lines: { include: { sku: true } }
+              }
+            }
+          }
+        }
+      }
+    });
+    if (!cutJob) throw new Error("Trabajo de corte no encontrado.");
+
+    const sale = cutJob.saleLine.sale;
+    const branchCode = sale.branch.code;
+
+    const linesToCheck = params.scope === "ENTIRE_ORDER"
+      ? sale.lines
+      : [cutJob.saleLine];
+
+    const results: Array<{
+      saleLineId: string;
+      skuCode: string;
+      requestedWidthM: number;
+      requestedHeightM: number;
+      suggestions: Array<{
+        scrapId: string;
+        locationCode: string | null;
+        widthM: number;
+        heightM: number;
+        fitScore: number;
+      }>;
+    }> = [];
+
+    for (const line of linesToCheck) {
+      const matches = await this.match({
+        branchCode,
+        skuCode: line.sku.code,
+        requestedWidthM: Number(line.requestedWidthM),
+        requestedHeightM: Number(line.requestedHeightM),
+        limit: params.maxPerLine
+      });
+
+      results.push({
+        saleLineId: line.id,
+        skuCode: line.sku.code,
+        requestedWidthM: Number(line.requestedWidthM),
+        requestedHeightM: Number(line.requestedHeightM),
+        suggestions: matches.map((m) => ({
+          scrapId: m.id,
+          locationCode: m.location?.code ?? null,
+          widthM: Number(m.widthM),
+          heightM: Number(m.heightM),
+          fitScore: Number(m.excessAreaM2.toFixed(3))
+        }))
+      });
+    }
+
+    return {
+      saleId: sale.id,
+      cutJobId: cutJob.id,
+      lines: results
+    };
+  }
+
+  async matchForSaleLines(params: {
+    saleId: string;
+    lineIds?: string[];
+    limitPerLine: number;
+  }) {
+    const sale = await prismaClient.sale.findUnique({
+      where: { id: params.saleId },
+      include: {
+        branch: true,
+        lines: {
+          include: {
+            sku: true,
+            allocations: { where: { isActive: true }, select: { scrapId: true } }
+          },
+          orderBy: { displayOrder: "asc" }
+        }
+      }
+    });
+    if (!sale) throw new Error("Venta no encontrada.");
+
+    const linesToCheck = params.lineIds
+      ? sale.lines.filter((l) => params.lineIds!.includes(l.id))
+      : sale.lines;
+
+    // Only check lines without active allocation
+    const eligibleLines = linesToCheck.filter((l) => l.allocations.length === 0);
+
+    const results: Array<{
+      saleLineId: string;
+      skuCode: string;
+      requestedWidthM: number;
+      requestedHeightM: number;
+      suggestions: Array<{
+        scrapId: string;
+        labelCode: string;
+        locationCode: string | null;
+        widthM: number;
+        heightM: number;
+        areaM2: number;
+        excessAreaM2: number;
+        createdAt: string;
+      }>;
+    }> = [];
+
+    for (const line of eligibleLines) {
+      const matches = await this.match({
+        branchCode: sale.branch.code,
+        skuCode: line.sku.code,
+        requestedWidthM: Number(line.requestedWidthM),
+        requestedHeightM: Number(line.requestedHeightM),
+        limit: params.limitPerLine
+      });
+
+      const labels = await prismaClient.label.findMany({
+        where: { scrapId: { in: matches.map((m) => m.id) } },
+        select: { scrapId: true, id: true }
+      });
+      const labelMap = new Map(labels.map((l) => [l.scrapId, l.id.slice(0, 8)]));
+
+      results.push({
+        saleLineId: line.id,
+        skuCode: line.sku.code,
+        requestedWidthM: Number(line.requestedWidthM),
+        requestedHeightM: Number(line.requestedHeightM),
+        suggestions: matches.map((m) => ({
+          scrapId: m.id,
+          labelCode: labelMap.get(m.id) ?? m.id.slice(0, 8),
+          locationCode: m.location?.code ?? null,
+          widthM: Number(m.widthM),
+          heightM: Number(m.heightM),
+          areaM2: Number(m.areaM2),
+          excessAreaM2: Number(m.excessAreaM2.toFixed(3)),
+          createdAt: m.createdAt.toISOString()
+        }))
+      });
+    }
+
+    return { saleId: sale.id, lines: results };
   }
 
   async allocateToSaleLine(input: { saleLineId: string; scrapId: string; allocatedByEmail: string }) {
@@ -107,6 +266,14 @@ export class PrismaScrapsRepository {
       where: { scrapId: input.scrapId, isActive: true }
     });
     if (existing) throw new Error("El retazo ya tiene una asignación activa.");
+
+    // Check soft holds: allow if held by same user, block if held by another
+    const activeHold = await prismaClient.scrapSoftHold.findFirst({
+      where: { scrapId: input.scrapId, status: SoftHoldStatus.ACTIVE, expiresAt: { gt: new Date() } }
+    });
+    if (activeHold && activeHold.heldBy !== user.id) {
+      throw new Error("El retazo esta reservado temporalmente por otro usuario.");
+    }
 
     const saleLine = await prismaClient.saleLine.findUnique({
       where: { id: input.saleLineId },
@@ -128,6 +295,24 @@ export class PrismaScrapsRepository {
         allocatedAt: new Date()
       }
     });
+
+    // Convert soft hold to CONVERTED if one exists
+    if (activeHold) {
+      await prismaClient.scrapSoftHold.update({
+        where: { id: activeHold.id },
+        data: { status: SoftHoldStatus.CONVERTED, convertedAt: new Date() }
+      });
+      await this.auditRepo.log({
+        branchId: scrap.branchId,
+        actorUserId: user.id,
+        entityType: "scrap_soft_hold",
+        entityId: activeHold.id,
+        action: AuditAction.STATUS_CHANGE,
+        beforeJson: { status: "ACTIVE" },
+        afterJson: { status: "CONVERTED", allocationId: allocation.id }
+      });
+    }
+
     await this.auditRepo.log({
       branchId: scrap.branchId,
       actorUserId: user.id,
@@ -689,6 +874,128 @@ export class PrismaScrapsRepository {
       skipped: existingCodes.size,
       total: generatedCodes.length
     };
+  }
+
+  // SPEC-58: Lazy expiration — expire stale holds
+  async expireStaleHolds() {
+    const now = new Date();
+    const stale = await prismaClient.scrapSoftHold.findMany({
+      where: { status: SoftHoldStatus.ACTIVE, expiresAt: { lte: now } }
+    });
+    if (stale.length === 0) return;
+    await prismaClient.scrapSoftHold.updateMany({
+      where: { status: SoftHoldStatus.ACTIVE, expiresAt: { lte: now } },
+      data: { status: SoftHoldStatus.EXPIRED }
+    });
+    for (const hold of stale) {
+      await this.auditRepo.log({
+        branchId: hold.branchId,
+        actorUserId: hold.heldBy,
+        entityType: "scrap_soft_hold",
+        entityId: hold.id,
+        action: AuditAction.STATUS_CHANGE,
+        beforeJson: { status: "ACTIVE" },
+        afterJson: { status: "EXPIRED", expiredAt: now.toISOString() }
+      });
+    }
+  }
+
+  async createSoftHold(input: {
+    scrapId: string;
+    saleId: string;
+    saleLineId?: string;
+    heldByEmail: string;
+    minutes: number;
+    reason?: string;
+  }) {
+    await this.expireStaleHolds();
+
+    const user = await prismaClient.appUser.findUnique({ where: { email: input.heldByEmail } });
+    if (!user) throw new Error("Usuario no encontrado.");
+
+    const scrap = await prismaClient.scrap.findUnique({ where: { id: input.scrapId } });
+    if (!scrap) throw new Error("Retazo no encontrado.");
+    if (scrap.status !== ScrapStatus.STORED) throw new Error("Solo retazos en estado ALMACENADO pueden reservarse.");
+
+    // Check no active allocation
+    const activeAlloc = await prismaClient.saleLineScrapAllocation.findFirst({
+      where: { scrapId: input.scrapId, isActive: true }
+    });
+    if (activeAlloc) throw new Error("El retazo ya tiene una asignacion activa.");
+
+    // Check no active soft hold
+    const existingHold = await prismaClient.scrapSoftHold.findFirst({
+      where: { scrapId: input.scrapId, status: SoftHoldStatus.ACTIVE }
+    });
+    if (existingHold) throw new Error("El retazo ya tiene una reserva activa.");
+
+    // Validate minutes against policy
+    const policy = await this.settingsRepo.getSoftHoldPolicy();
+    if (!policy.enabled) throw new Error("La reserva temporal no esta habilitada.");
+    const clampedMinutes = Math.max(1, Math.min(input.minutes, policy.maxMinutes));
+    const expiresAt = new Date(Date.now() + clampedMinutes * 60_000);
+
+    const hold = await prismaClient.scrapSoftHold.create({
+      data: {
+        branchId: scrap.branchId,
+        scrapId: input.scrapId,
+        saleId: input.saleId,
+        saleLineId: input.saleLineId ?? null,
+        heldBy: user.id,
+        reason: input.reason?.trim() || null,
+        expiresAt
+      }
+    });
+
+    await this.auditRepo.log({
+      branchId: scrap.branchId,
+      actorUserId: user.id,
+      entityType: "scrap_soft_hold",
+      entityId: hold.id,
+      action: AuditAction.CREATE,
+      afterJson: {
+        scrapId: input.scrapId,
+        saleId: input.saleId,
+        saleLineId: input.saleLineId ?? null,
+        minutes: clampedMinutes,
+        expiresAt: expiresAt.toISOString()
+      }
+    });
+
+    return { id: hold.id, scrapId: hold.scrapId, status: hold.status, expiresAt: hold.expiresAt };
+  }
+
+  async releaseSoftHold(input: { scrapId: string; releasedByEmail: string }) {
+    const user = await prismaClient.appUser.findUnique({ where: { email: input.releasedByEmail } });
+    if (!user) throw new Error("Usuario no encontrado.");
+
+    const hold = await prismaClient.scrapSoftHold.findFirst({
+      where: { scrapId: input.scrapId, status: SoftHoldStatus.ACTIVE }
+    });
+    if (!hold) throw new Error("No existe una reserva activa para este retazo.");
+
+    await prismaClient.scrapSoftHold.update({
+      where: { id: hold.id },
+      data: { status: SoftHoldStatus.RELEASED, releasedAt: new Date() }
+    });
+
+    await this.auditRepo.log({
+      branchId: hold.branchId,
+      actorUserId: user.id,
+      entityType: "scrap_soft_hold",
+      entityId: hold.id,
+      action: AuditAction.STATUS_CHANGE,
+      beforeJson: { status: "ACTIVE" },
+      afterJson: { status: "RELEASED", releasedAt: new Date().toISOString() }
+    });
+  }
+
+  async getActiveSoftHold(scrapId: string) {
+    await this.expireStaleHolds();
+    return prismaClient.scrapSoftHold.findFirst({
+      where: { scrapId, status: SoftHoldStatus.ACTIVE },
+      include: { heldByUser: { select: { email: true, fullName: true } } }
+    });
   }
 }
 

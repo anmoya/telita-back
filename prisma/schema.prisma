@@ -73,6 +73,13 @@ enum AuditAction {
   PRINT
 }
 
+enum SoftHoldStatus {
+  ACTIVE
+  RELEASED
+  EXPIRED
+  CONVERTED
+}
+
 enum DiscountSource {
   NONE
   CUSTOMER_CODE
@@ -113,6 +120,7 @@ model Branch {
   auditLogs            AuditLog[]
   quoteItemCategories  QuoteItemCategory[]
   quoteBatches         QuoteBatch[]
+  scrapSoftHolds       ScrapSoftHold[]
 
   @@map("branch")
 }
@@ -143,6 +151,7 @@ model AppUser {
   scrapAllocations           SaleLineScrapAllocation[] @relation("AllocationAllocatedBy")
   categoriesCreated          QuoteItemCategory[]       @relation("CategoryCreatedBy")
   quoteBatches               QuoteBatch[]              @relation("QuoteBatchCreatedBy")
+  scrapSoftHolds             ScrapSoftHold[]           @relation("SoftHoldHeldBy")
 
   @@map("app_user")
 }
@@ -380,7 +389,8 @@ model Sale {
   customer    Customer? @relation(fields: [customerId], references: [id])
   priceList   PriceList @relation(fields: [priceListId], references: [id])
   currency    Currency  @relation(fields: [currencyCode], references: [code])
-  lines       SaleLine[]
+  lines          SaleLine[]
+  scrapSoftHolds ScrapSoftHold[]
 
   @@index([branchId, status, createdAt])
   @@map("sale")
@@ -473,8 +483,9 @@ model SaleLine {
   cutJobs     CutJob[]
   scraps      Scrap[]
   labels      Label[]
-  allocations SaleLineScrapAllocation[]
-  pieces      SaleLinePiece[]
+  allocations    SaleLineScrapAllocation[]
+  pieces         SaleLinePiece[]
+  scrapSoftHolds ScrapSoftHold[]
 
   @@index([saleId])
   @@map("sale_line")
@@ -565,6 +576,7 @@ model Scrap {
   classifiedByUser  AppUser?         @relation("ScrapClassifiedBy", fields: [classifiedBy], references: [id])
   labels            Label[]
   allocations       SaleLineScrapAllocation[]
+  softHolds         ScrapSoftHold[]
 
   @@index([branchId, status, skuId])
   @@index([locationId])
@@ -627,6 +639,32 @@ model SaleLineScrapAllocation {
   @@index([saleLineId])
   @@index([scrapId])
   @@map("sale_line_scrap_allocation")
+}
+
+model ScrapSoftHold {
+  id          String         @id @default(uuid()) @db.Uuid
+  branchId    String         @map("branch_id") @db.Uuid
+  scrapId     String         @map("scrap_id") @db.Uuid
+  saleId      String         @map("sale_id") @db.Uuid
+  saleLineId  String?        @map("sale_line_id") @db.Uuid
+  heldBy      String         @map("held_by") @db.Uuid
+  reason      String?        @db.VarChar(200)
+  status      SoftHoldStatus @default(ACTIVE)
+  expiresAt   DateTime       @map("expires_at") @db.Timestamptz(6)
+  releasedAt  DateTime?      @map("released_at") @db.Timestamptz(6)
+  convertedAt DateTime?      @map("converted_at") @db.Timestamptz(6)
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  branch      Branch    @relation(fields: [branchId], references: [id])
+  scrap       Scrap     @relation(fields: [scrapId], references: [id])
+  sale        Sale      @relation(fields: [saleId], references: [id])
+  saleLine    SaleLine? @relation(fields: [saleLineId], references: [id])
+  heldByUser  AppUser   @relation("SoftHoldHeldBy", fields: [heldBy], references: [id])
+
+  @@index([scrapId, status])
+  @@index([saleId])
+  @@index([expiresAt])
+  @@map("scrap_soft_hold")
 }
 
 model AuditLog {
