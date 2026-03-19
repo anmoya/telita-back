@@ -62,6 +62,9 @@ export class QuoteBatchesController {
     @Query("branchCode") branchCode = "MAIN",
     @Query("status") status?: string,
     @Query("customerName") customerName?: string,
+    @Query("customerReference") customerReference?: string,
+    @Query("from") from?: string,
+    @Query("to") to?: string,
     @Query("page") page?: string,
     @Query("limit") limit?: string,
     @Headers("authorization") authorization?: string
@@ -71,6 +74,9 @@ export class QuoteBatchesController {
     const result = await this.repo.list(branchCode, {
       status: status as QuoteBatchStatusCode | undefined,
       customerName,
+      customerReference,
+      from,
+      to,
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined
     });

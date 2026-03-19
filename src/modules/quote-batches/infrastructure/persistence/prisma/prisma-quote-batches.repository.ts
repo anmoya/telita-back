@@ -89,15 +89,34 @@ export class PrismaQuoteBatchesRepository {
 
   async list(
     branchCode: string,
-    filters?: { status?: QuoteBatchStatus; customerName?: string; page?: number; limit?: number }
+    filters?: {
+      status?: QuoteBatchStatus;
+      customerName?: string;
+      customerReference?: string;
+      from?: string;
+      to?: string;
+      page?: number;
+      limit?: number;
+    }
   ) {
     const limit = Math.min(filters?.limit ?? 8, 100);
     const page = Math.max(filters?.page ?? 1, 1);
     const skip = (page - 1) * limit;
+
+    const createdAtFilter: Record<string, Date> | undefined =
+      filters?.from || filters?.to
+        ? {
+            ...(filters.from ? { gte: new Date(filters.from) } : {}),
+            ...(filters.to ? { lte: new Date(`${filters.to}T23:59:59.999Z`) } : {})
+          }
+        : undefined;
+
     const where: Prisma.QuoteBatchWhereInput = {
       branch: { code: branchCode },
       status: filters?.status,
-      customerName: filters?.customerName ? { contains: filters.customerName, mode: Prisma.QueryMode.insensitive } : undefined
+      customerName: filters?.customerName ? { contains: filters.customerName, mode: Prisma.QueryMode.insensitive } : undefined,
+      customerReference: filters?.customerReference ? { contains: filters.customerReference, mode: Prisma.QueryMode.insensitive } : undefined,
+      createdAt: createdAtFilter
     };
 
     const [data, total] = await Promise.all([
