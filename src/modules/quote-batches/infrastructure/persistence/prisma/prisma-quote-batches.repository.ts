@@ -25,6 +25,7 @@ export class PrismaQuoteBatchesRepository {
     branchCode: string;
     createdByEmail: string;
     priceListName: string;
+    customerId?: string;
     customerName?: string;
     customerReference?: string;
     amountPaid?: number;
@@ -51,6 +52,7 @@ export class PrismaQuoteBatchesRepository {
           branchId: branch.id,
           createdBy: user.id,
           priceListId: priceList.id,
+          customerId: input.customerId ?? null,
           customerName: input.customerName,
           customerReference: input.customerReference,
           subtotalAmount: subtotal,
@@ -172,6 +174,7 @@ export class PrismaQuoteBatchesRepository {
   }
 
   async update(id: string, updatedByEmail: string, input: {
+    customerId?: string | null;
     customerName?: string;
     customerReference?: string;
     amountPaid?: number;
@@ -185,6 +188,7 @@ export class PrismaQuoteBatchesRepository {
     if (!user) throw new Error("Usuario no encontrado.");
 
     const updateData: Record<string, unknown> = {};
+    if (input.customerId !== undefined) updateData.customerId = input.customerId;
     if (input.customerName !== undefined) updateData.customerName = input.customerName;
     if (input.customerReference !== undefined) updateData.customerReference = input.customerReference;
     if (input.amountPaid !== undefined) updateData.amountPaid = Math.max(input.amountPaid, 0);
@@ -244,6 +248,7 @@ export class PrismaQuoteBatchesRepository {
           branchId: original.branchId,
           createdBy: user.id,
           priceListId: original.priceListId,
+          customerId: original.customerId,
           customerName: original.customerName,
           customerReference: original.customerReference,
           subtotalAmount: original.subtotalAmount,

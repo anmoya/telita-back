@@ -41,6 +41,7 @@ export class QuoteBatchesController {
     @Body() body: {
       branchCode: string;
       priceListName: string;
+      customerId?: string;
       customerName?: string;
       customerReference?: string;
       amountPaid?: number;
@@ -106,6 +107,7 @@ export class QuoteBatchesController {
   async update(
     @Param("id") id: string,
     @Body() body: {
+      customerId?: string | null;
       customerName?: string;
       customerReference?: string;
       amountPaid?: number;
@@ -169,6 +171,7 @@ function serializeBatch(b: NonNullable<BatchRow> | BatchListRow) {
     id: b.id,
     status: b.status,
     priceListName: b.priceList.name,
+    customerId: b.customerId,
     customerName: b.customerName,
     customerReference: b.customerReference,
     subtotalAmount: Number(b.subtotalAmount),

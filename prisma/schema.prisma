@@ -152,6 +152,7 @@ model AppUser {
   categoriesCreated          QuoteItemCategory[]       @relation("CategoryCreatedBy")
   quoteBatches               QuoteBatch[]              @relation("QuoteBatchCreatedBy")
   scrapSoftHolds             ScrapSoftHold[]           @relation("SoftHoldHeldBy")
+  customerDiscountsCreated   CustomerDiscount[]        @relation("CustomerDiscountCreatedBy")
 
   @@map("app_user")
 }
@@ -292,11 +293,34 @@ model Customer {
   branch             Branch     @relation(fields: [branchId], references: [id])
   preferredPriceList PriceList? @relation(fields: [preferredPriceListId], references: [id])
   sales              Sale[]
+  quoteBatches       QuoteBatch[]
+  discounts          CustomerDiscount[]
 
   @@unique([branchId, code])
   @@unique([branchId, discountCode])
   @@index([branchId, fullName, isActive])
   @@map("customer")
+}
+
+model CustomerDiscount {
+  id           String   @id @default(uuid()) @db.Uuid
+  customerId   String   @map("customer_id") @db.Uuid
+  discountCode String?  @map("discount_code") @db.VarChar(40)
+  discountPct  Decimal  @map("discount_pct") @db.Decimal(5, 2)
+  reason       String?  @db.VarChar(200)
+  validFrom    DateTime @map("valid_from") @db.Date
+  validTo      DateTime? @map("valid_to") @db.Date
+  isActive     Boolean  @default(true) @map("is_active")
+  createdBy    String   @map("created_by") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  customer      Customer @relation(fields: [customerId], references: [id])
+  createdByUser AppUser  @relation("CustomerDiscountCreatedBy", fields: [createdBy], references: [id])
+
+  @@index([customerId])
+  @@index([customerId, validFrom, validTo])
+  @@map("customer_discount")
 }
 
 model PriceListItem {
@@ -420,6 +444,7 @@ model QuoteBatch {
   branchId          String           @map("branch_id") @db.Uuid
   createdBy         String           @map("created_by") @db.Uuid
   priceListId       String           @map("price_list_id") @db.Uuid
+  customerId        String?          @map("customer_id") @db.Uuid
   customerName      String?          @map("customer_name") @db.VarChar(160)
   customerReference String?          @map("customer_reference") @db.VarChar(120)
   subtotalAmount    Decimal          @default(0) @map("subtotal_amount") @db.Decimal(14, 2)
@@ -433,6 +458,7 @@ model QuoteBatch {
   branch        Branch         @relation(fields: [branchId], references: [id])
   createdByUser AppUser        @relation("QuoteBatchCreatedBy", fields: [createdBy], references: [id])
   priceList     PriceList      @relation(fields: [priceListId], references: [id])
+  customer      Customer?      @relation(fields: [customerId], references: [id])
   lines         QuoteBatchLine[]
 
   @@index([branchId, status, createdAt])

@@ -3,11 +3,13 @@ import { AuditAction, CutJobStatus, DiscountSource, PriceMethod, SaleStatus, Scr
 import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 import { PrismaQuoteItemCategoriesRepository } from "../../../../quote-item-categories/infrastructure/persistence/prisma/prisma-quote-item-categories.repository";
+import { PrismaCustomerDiscountsRepository } from "../../../../customers/infrastructure/persistence/prisma/prisma-customer-discounts.repository";
 
 @Injectable()
 export class PrismaSalesRepository {
   private readonly auditRepo = new PrismaAuditRepository();
   private readonly categoriesRepo = new PrismaQuoteItemCategoriesRepository();
+  private readonly customerDiscountsRepo = new PrismaCustomerDiscountsRepository();
 
   async createDraft(input: {
     branchCode: string;
@@ -44,8 +46,14 @@ export class PrismaSalesRepository {
         })
       : null;
     if (input.customerId && !customer) throw new Error("Cliente no encontrado.");
+    const temporalDiscount = customer
+      ? await this.customerDiscountsRepo.findActiveForDate(customer.id, new Date())
+      : null;
     const discount = resolveSaleDiscount({
       manualDiscountPct: input.manualDiscountPct,
+      temporalDiscount: temporalDiscount
+        ? { discountCode: temporalDiscount.discountCode, discountPct: Number(temporalDiscount.discountPct) }
+        : null,
       customerDiscountCode: customer?.discountCode ?? null,
       customerDiscountPct: customer ? Number(customer.discountPct) : 0
     });
@@ -307,12 +315,18 @@ export class PrismaSalesRepository {
             })
           : null;
     if (input.customerId && !customer) throw new Error("Cliente no encontrado.");
+    const temporalDiscount = customer
+      ? await this.customerDiscountsRepo.findActiveForDate(customer.id, new Date())
+      : null;
     const manualDiscountPct =
       input.manualDiscountPct === undefined || input.manualDiscountPct === null
         ? Number(sale.manualDiscountPct)
         : input.manualDiscountPct;
     const discount = resolveSaleDiscount({
       manualDiscountPct,
+      temporalDiscount: temporalDiscount
+        ? { discountCode: temporalDiscount.discountCode, discountPct: Number(temporalDiscount.discountPct) }
+        : null,
       customerDiscountCode: customer?.discountCode ?? null,
       customerDiscountPct: customer ? Number(customer.discountPct) : 0
     });
@@ -533,8 +547,14 @@ export class PrismaSalesRepository {
         })
       : null;
     if (input.customerId && !customer) throw new Error("Cliente no encontrado.");
+    const temporalDiscount = customer
+      ? await this.customerDiscountsRepo.findActiveForDate(customer.id, new Date())
+      : null;
     const discount = resolveSaleDiscount({
       manualDiscountPct: input.manualDiscountPct,
+      temporalDiscount: temporalDiscount
+        ? { discountCode: temporalDiscount.discountCode, discountPct: Number(temporalDiscount.discountPct) }
+        : null,
       customerDiscountCode: customer?.discountCode ?? null,
       customerDiscountPct: customer ? Number(customer.discountPct) : 0
     });
@@ -1012,12 +1032,20 @@ function computeLineAmounts(input: {
 
 function resolveSaleDiscount(input: {
   manualDiscountPct?: number | null;
+  temporalDiscount?: { discountCode: string | null; discountPct: number } | null;
   customerDiscountCode?: string | null;
   customerDiscountPct?: number;
 }) {
   const manualDiscountPct = normalizeDiscount(input.manualDiscountPct);
   if (manualDiscountPct > 0) {
     return { source: DiscountSource.MANUAL, code: null, pct: manualDiscountPct };
+  }
+  if (input.temporalDiscount && input.temporalDiscount.discountPct > 0) {
+    return {
+      source: DiscountSource.CUSTOMER_CODE,
+      code: input.temporalDiscount.discountCode,
+      pct: normalizeDiscount(input.temporalDiscount.discountPct)
+    };
   }
   const customerDiscountPct = normalizeDiscount(input.customerDiscountPct);
   if (customerDiscountPct > 0 && input.customerDiscountCode) {
