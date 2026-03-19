@@ -1,10 +1,12 @@
 import { AuditAction } from "@prisma/client";
 import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
+import { normalizeRut, validateRut } from "../../../../../shared/utils/rut";
 
 export type CustomerPayload = {
   branchCode: string;
   fullName: string;
+  rut?: string | null;
   phone?: string | null;
   email?: string | null;
   companyOrReference?: string | null;
@@ -26,6 +28,7 @@ export class PrismaCustomersRepository {
           ? [
               { fullName: { contains: params.q, mode: "insensitive" } },
               { code: { contains: params.q, mode: "insensitive" } },
+              { rut: { contains: params.q, mode: "insensitive" } },
               { companyOrReference: { contains: params.q, mode: "insensitive" } },
               { discountCode: { contains: params.q, mode: "insensitive" } }
             ]
@@ -55,10 +58,13 @@ export class PrismaCustomersRepository {
     const preferredPriceListId = await resolvePreferredPriceListId(branch.id, input.preferredPriceListName);
     const code = await this.getNextCustomerCode(branch.id);
 
+    const normalizedRut = await this.resolveAndValidateRut(input.rut, branch.id);
+
     const customer = await prismaClient.customer.create({
       data: {
         branchId: branch.id,
         code,
+        rut: normalizedRut,
         fullName: input.fullName.trim(),
         phone: normalizeNullable(input.phone),
         email: normalizeNullable(input.email),
@@ -79,6 +85,7 @@ export class PrismaCustomersRepository {
       action: AuditAction.CREATE,
       afterJson: {
         code: customer.code,
+        rut: customer.rut,
         fullName: customer.fullName,
         discountCode: customer.discountCode,
         discountPct: Number(customer.discountPct)
@@ -97,9 +104,14 @@ export class PrismaCustomersRepository {
         ? existing.preferredPriceListId
         : await resolvePreferredPriceListId(existing.branchId, input.preferredPriceListName);
 
+    const normalizedRut = input.rut !== undefined
+      ? await this.resolveAndValidateRut(input.rut, existing.branchId, id)
+      : undefined;
+
     const customer = await prismaClient.customer.update({
       where: { id },
       data: {
+        rut: normalizedRut,
         fullName: input.fullName ? input.fullName.trim() : existing.fullName,
         phone: input.phone !== undefined ? normalizeNullable(input.phone) : undefined,
         email: input.email !== undefined ? normalizeNullable(input.email) : undefined,
@@ -121,6 +133,7 @@ export class PrismaCustomersRepository {
       action: AuditAction.UPDATE,
       beforeJson: {
         fullName: existing.fullName,
+        rut: existing.rut,
         phone: existing.phone,
         email: existing.email,
         companyOrReference: existing.companyOrReference,
@@ -131,6 +144,7 @@ export class PrismaCustomersRepository {
       },
       afterJson: {
         fullName: customer.fullName,
+        rut: customer.rut,
         phone: customer.phone,
         email: customer.email,
         companyOrReference: customer.companyOrReference,
@@ -164,6 +178,28 @@ export class PrismaCustomersRepository {
     });
 
     return customer;
+  }
+
+  private async resolveAndValidateRut(
+    rut: string | null | undefined,
+    branchId: string,
+    excludeId?: string
+  ): Promise<string | null> {
+    if (!rut || !rut.trim()) return null;
+
+    const normalized = normalizeRut(rut);
+    if (!validateRut(normalized)) {
+      throw new Error("RUT inválido.");
+    }
+
+    const existing = await prismaClient.customer.findFirst({
+      where: { branchId, rut: normalized, ...(excludeId ? { id: { not: excludeId } } : {}) }
+    });
+    if (existing) {
+      throw new Error("Ya existe un cliente con este RUT en esta sucursal.");
+    }
+
+    return normalized;
   }
 
   private async getNextCustomerCode(branchId: string): Promise<string> {

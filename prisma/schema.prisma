@@ -276,6 +276,7 @@ model Customer {
   id                  String    @id @default(uuid()) @db.Uuid
   branchId            String    @map("branch_id") @db.Uuid
   code                String    @db.VarChar(30)
+  rut                 String?   @db.VarChar(12)
   fullName            String    @map("full_name") @db.VarChar(160)
   phone               String?   @db.VarChar(40)
   email               String?   @db.VarChar(160)

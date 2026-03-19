@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Headers, Param, Patch, Post, Put, Query } from "@nestjs/common";
+import { BadRequestException, Body, ConflictException, Controller, Get, Headers, Param, Patch, Post, Put, Query } from "@nestjs/common";
 import { PrismaCustomersRepository, type CustomerPayload } from "../../infrastructure/persistence/prisma/prisma-customers.repository";
 import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
 
@@ -51,7 +51,9 @@ export class CustomersController {
     try {
       return serializeCustomer(await this.repo.create(body, auth.sub));
     } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
+      const msg = getErrorMessage(error);
+      if (msg.includes("Ya existe un cliente con este RUT")) throw new ConflictException(msg);
+      throw new BadRequestException(msg);
     }
   }
 
@@ -67,6 +69,7 @@ export class CustomersController {
       return serializeCustomer(
         await this.repo.update(id, {
           fullName: body.fullName,
+          rut: body.rut,
           phone: body.phone,
           email: body.email,
           companyOrReference: body.companyOrReference,
@@ -77,7 +80,9 @@ export class CustomersController {
         }, auth.sub)
       );
     } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
+      const msg = getErrorMessage(error);
+      if (msg.includes("Ya existe un cliente con este RUT")) throw new ConflictException(msg);
+      throw new BadRequestException(msg);
     }
   }
 
@@ -100,6 +105,7 @@ export class CustomersController {
 function serializeCustomer(customer: {
   id: string;
   code: string;
+  rut: string | null;
   fullName: string;
   phone: string | null;
   email: string | null;
@@ -113,6 +119,7 @@ function serializeCustomer(customer: {
   return {
     id: customer.id,
     code: customer.code,
+    rut: customer.rut,
     fullName: customer.fullName,
     phone: customer.phone,
     email: customer.email,
