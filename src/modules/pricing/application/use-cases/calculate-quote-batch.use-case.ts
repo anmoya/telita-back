@@ -96,19 +96,19 @@ export class CalculateQuoteBatchUseCase {
         let unitPrice = context.unitPrice;
         let linearMeters = 0;
         let priceMethod: "LINEAR_METER" | "TABLE_LOOKUP" = "LINEAR_METER";
-        let subtotal: number;
+        let grossSubtotal: number;
 
         if (cellPrice) {
           priceMethod = "TABLE_LOOKUP";
           unitPrice = cellPrice.unitPrice;
-          subtotal = roundCurrency(unitPrice * item.quantity);
+          grossSubtotal = roundCurrency(unitPrice * item.quantity);
         } else {
           linearMeters = item.requestedHeightM * item.quantity;
-          subtotal = roundCurrency(linearMeters * unitPrice);
+          grossSubtotal = roundCurrency(linearMeters * unitPrice);
         }
 
-        const effectivePrice = subtotal * (1 - context.discountPct / 100);
-        const totalRounded = roundClpCash(effectivePrice);
+        const subtotal = roundCurrency(grossSubtotal * (1 - context.discountPct / 100));
+        const totalRounded = roundClpCash(subtotal);
 
         const { quoteId } = await this.priceRepository.saveQuote({
           branchId: context.branchId,

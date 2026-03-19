@@ -1,7 +1,9 @@
+import { Injectable } from "@nestjs/common";
 import { AuditAction, PrismaClient } from "@prisma/client";
 import type { PriceRepositoryPort } from "../../../application/ports/price-repository.port";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 
+@Injectable()
 export class PrismaPriceRepository implements PriceRepositoryPort {
   private readonly auditRepo = new PrismaAuditRepository();
 
@@ -157,6 +159,14 @@ export class PrismaPriceRepository implements PriceRepositoryPort {
     }));
   }
 
+  async getBranchSummaryByCode(branchCode: string): Promise<{ id: string; name: string } | null> {
+    const branch = await this.prisma.branch.findFirst({
+      where: { code: branchCode },
+      select: { id: true, name: true }
+    });
+    return branch ?? null;
+  }
+
   // SPEC-31: Price list cell methods
   async getCellPrice(params: {
     priceListId: string;
@@ -263,6 +273,38 @@ export class PrismaPriceRepository implements PriceRepositoryPort {
       maxHeightM: Number(cell.maxHeightM),
       unitPrice: Number(cell.unitPrice)
     };
+  }
+
+  async createCellBySkuCode(params: {
+    priceListId: string;
+    skuCode: string;
+    maxWidthM: number;
+    maxHeightM: number;
+    unitPrice: number;
+  }) {
+    const priceList = await this.prisma.priceList.findUnique({
+      where: { id: params.priceListId },
+      select: { branchId: true }
+    });
+    if (!priceList) {
+      throw new Error("Lista de precios no encontrada");
+    }
+
+    const sku = await this.prisma.fabricSku.findFirst({
+      where: { branchId: priceList.branchId, code: params.skuCode, isActive: true },
+      select: { id: true }
+    });
+    if (!sku) {
+      throw new Error("SKU no encontrado");
+    }
+
+    return this.createCell({
+      priceListId: params.priceListId,
+      skuId: sku.id,
+      maxWidthM: params.maxWidthM,
+      maxHeightM: params.maxHeightM,
+      unitPrice: params.unitPrice
+    });
   }
 
   async updateCell(

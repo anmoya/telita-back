@@ -1,3 +1,4 @@
+import { Injectable } from "@nestjs/common";
 import { AuditAction } from "@prisma/client";
 import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
@@ -44,6 +45,7 @@ const userSelect = {
   branch: { select: { code: true } }
 } as const;
 
+@Injectable()
 export class PrismaUsersRepository implements UserRepositoryPort {
   private readonly auditRepo = new PrismaAuditRepository();
 
@@ -224,5 +226,13 @@ export class PrismaUsersRepository implements UserRepositoryPort {
       where: { id: userId },
       data: { onboardingCompletedAt: new Date() }
     });
+  }
+
+  async getBranchCodeByUserId(userId: string): Promise<string> {
+    const user = await prismaClient.appUser.findUnique({
+      where: { id: userId },
+      include: { branch: { select: { code: true } } }
+    });
+    return user?.branch?.code ?? "";
   }
 }

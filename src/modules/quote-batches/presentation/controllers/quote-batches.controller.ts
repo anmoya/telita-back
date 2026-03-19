@@ -13,7 +13,9 @@ import {
 import { Headers } from "@nestjs/common";
 import { PrismaQuoteBatchesRepository } from "../../infrastructure/persistence/prisma/prisma-quote-batches.repository";
 import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
-import { PriceMethod, QuoteBatchStatus } from "@prisma/client";
+
+type PriceMethodCode = "LINEAR_METER" | "AREA" | "FIXED" | "TABLE_LOOKUP";
+type QuoteBatchStatusCode = "DRAFT" | "FINALIZED" | "EXPIRED";
 
 type LineInput = {
   skuCode: string;
@@ -22,7 +24,7 @@ type LineInput = {
   quantity: number;
   unitPrice: number;
   lineSubtotal: number;
-  priceMethod: PriceMethod;
+  priceMethod: PriceMethodCode;
   categoryId?: string;
   categoryName?: string;
   lineNote?: string;
@@ -60,15 +62,25 @@ export class QuoteBatchesController {
     @Query("branchCode") branchCode = "MAIN",
     @Query("status") status?: string,
     @Query("customerName") customerName?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const batches = await this.repo.list(branchCode, {
-      status: status as QuoteBatchStatus | undefined,
-      customerName
+    const result = await this.repo.list(branchCode, {
+      status: status as QuoteBatchStatusCode | undefined,
+      customerName,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined
     });
-    return batches.map(serializeBatch);
+    return {
+      data: result.data.map(serializeBatch),
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+      totalPages: result.totalPages
+    };
   }
 
   @Get(":id")
@@ -137,8 +149,10 @@ export class QuoteBatchesController {
 }
 
 type BatchRow = Awaited<ReturnType<PrismaQuoteBatchesRepository["findById"]>>;
+type BatchListResult = Awaited<ReturnType<PrismaQuoteBatchesRepository["list"]>>;
+type BatchListRow = BatchListResult["data"][number];
 
-function serializeBatch(b: NonNullable<BatchRow>) {
+function serializeBatch(b: NonNullable<BatchRow> | BatchListRow) {
   return {
     id: b.id,
     status: b.status,

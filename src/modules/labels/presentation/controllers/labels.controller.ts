@@ -14,10 +14,11 @@ import {
 
 import { PrismaLabelsRepository } from "../../infrastructure/persistence/prisma/prisma-labels.repository";
 import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
+import { BatchPrintDto, CreateGenericLabelBatchDto } from "../dto/labels.dto";
 
 @Controller("labels")
 export class LabelsController {
-  private readonly repo = new PrismaLabelsRepository();
+  constructor(private readonly repo: PrismaLabelsRepository) {}
 
   @Post("quote/:quoteId")
   async createQuoteLabel(
@@ -73,30 +74,46 @@ export class LabelsController {
     @Query("saleLineId") saleLineId?: string,
     @Query("scrapId") scrapId?: string,
     @Query("quoteId") quoteId?: string,
+    @Query("type") type?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const labels = await this.repo.list({ branchCode, saleLineId, scrapId, quoteId });
-    return labels.map((l) => ({
-      id: l.id,
-      type: l.type,
-      saleLineId: l.saleLineId,
-      scrapId: l.scrapId,
-      quoteId: l.quoteId,
-      createdAt: l.createdAt.toISOString(),
-      lastPrintedAt: l.printEvents[0]?.printedAt.toISOString() ?? null
-    }));
+    const result = await this.repo.list({
+      branchCode,
+      saleLineId,
+      scrapId,
+      quoteId,
+      type: type?.toUpperCase(),
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined
+    });
+    return {
+      data: result.data.map((label) => ({
+        id: label.id,
+        type: label.type,
+        saleLineId: label.saleLineId,
+        scrapId: label.scrapId,
+        quoteId: label.quoteId,
+        createdAt: label.createdAt.toISOString(),
+        lastPrintedAt: label.printEvents[0]?.printedAt.toISOString() ?? null
+      })),
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+      totalPages: result.totalPages
+    };
   }
 
   @Get(":labelId/pdf")
   @Header("Content-Type", "text/html; charset=utf-8")
   async getPdf(
     @Param("labelId") labelId: string,
-    @Headers("authorization") authorization?: string,
-    @Query("accessToken") accessToken?: string
+    @Headers("authorization") authorization?: string
   ) {
-    const auth = requireAuth(authorization ?? (accessToken ? `Bearer ${accessToken}` : undefined));
+    const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     try {
       const buffer = await this.repo.getHtmlContent(labelId);
@@ -110,20 +127,18 @@ export class LabelsController {
   @Header("Content-Type", "text/html; charset=utf-8")
   async getHtml(
     @Param("labelId") labelId: string,
-    @Headers("authorization") authorization?: string,
-    @Query("accessToken") accessToken?: string
+    @Headers("authorization") authorization?: string
   ) {
-    return this.getPdf(labelId, authorization, accessToken);
+    return this.getPdf(labelId, authorization);
   }
 
   @Get(":labelId/zpl")
   @Header("Content-Type", "text/plain; charset=utf-8")
   async getZpl(
     @Param("labelId") labelId: string,
-    @Headers("authorization") authorization?: string,
-    @Query("accessToken") accessToken?: string
+    @Headers("authorization") authorization?: string
   ) {
-    const auth = requireAuth(authorization ?? (accessToken ? `Bearer ${accessToken}` : undefined));
+    const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     try {
       const buffer = await this.repo.getZplContent(labelId);
@@ -135,10 +150,7 @@ export class LabelsController {
 
   @Post("batch")
   async createGenericBatch(
-    @Body() body: {
-      branchCode: string;
-      items: Array<{ type: "SALE_LINE" | "SCRAP"; saleLineId?: string; scrapId?: string }>;
-    },
+    @Body() body: CreateGenericLabelBatchDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -155,10 +167,9 @@ export class LabelsController {
   @Header("Content-Type", "text/html; charset=utf-8")
   async getBatchPdf(
     @Query("labelIds") labelIdsParam: string,
-    @Headers("authorization") authorization?: string,
-    @Query("accessToken") accessToken?: string
+    @Headers("authorization") authorization?: string
   ) {
-    const auth = requireAuth(authorization ?? (accessToken ? `Bearer ${accessToken}` : undefined));
+    const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     const labelIds = labelIdsParam ? labelIdsParam.split(",").filter(Boolean) : [];
     if (labelIds.length === 0) throw new UnprocessableEntityException("labelIds required");
@@ -174,20 +185,18 @@ export class LabelsController {
   @Header("Content-Type", "text/html; charset=utf-8")
   async getBatchHtml(
     @Query("labelIds") labelIdsParam: string,
-    @Headers("authorization") authorization?: string,
-    @Query("accessToken") accessToken?: string
+    @Headers("authorization") authorization?: string
   ) {
-    return this.getBatchPdf(labelIdsParam, authorization, accessToken);
+    return this.getBatchPdf(labelIdsParam, authorization);
   }
 
   @Get("batch-zpl")
   @Header("Content-Type", "text/plain; charset=utf-8")
   async getBatchZpl(
     @Query("labelIds") labelIdsParam: string,
-    @Headers("authorization") authorization?: string,
-    @Query("accessToken") accessToken?: string
+    @Headers("authorization") authorization?: string
   ) {
-    const auth = requireAuth(authorization ?? (accessToken ? `Bearer ${accessToken}` : undefined));
+    const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     const labelIds = labelIdsParam ? labelIdsParam.split(",").filter(Boolean) : [];
     if (labelIds.length === 0) throw new UnprocessableEntityException("labelIds required");
@@ -201,7 +210,7 @@ export class LabelsController {
 
   @Post("batch-print")
   async batchPrint(
-    @Body() body: { labelIds: string[] },
+    @Body() body: BatchPrintDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);

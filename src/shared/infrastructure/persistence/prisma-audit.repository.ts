@@ -1,13 +1,17 @@
+import { Injectable } from "@nestjs/common";
 import { AuditAction, Prisma } from "@prisma/client";
 import { prismaClient } from "./prisma-client";
 
+export type AuditActionCode = "CREATE" | "UPDATE" | "DELETE" | "STATUS_CHANGE" | "PRINT";
+
+@Injectable()
 export class PrismaAuditRepository {
   async log(input: {
     branchId?: string | null;
     actorUserId: string;
     entityType: string;
     entityId: string;
-    action: AuditAction;
+    action: AuditActionCode;
     beforeJson?: unknown;
     afterJson?: unknown;
   }) {
@@ -17,7 +21,7 @@ export class PrismaAuditRepository {
         actorUserId: input.actorUserId,
         entityType: input.entityType,
         entityId: input.entityId,
-        action: input.action,
+        action: input.action as AuditAction,
         beforeJson: toInputJson(input.beforeJson),
         afterJson: toInputJson(input.afterJson)
       }

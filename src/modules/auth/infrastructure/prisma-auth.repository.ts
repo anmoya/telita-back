@@ -1,5 +1,7 @@
+import { Injectable } from "@nestjs/common";
 import { prismaClient } from "../../../shared/infrastructure/persistence/prisma-client";
 
+@Injectable()
 export class PrismaAuthRepository {
   async findActiveUserByEmail(email: string) {
     return prismaClient.appUser.findFirst({

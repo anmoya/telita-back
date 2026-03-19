@@ -1,6 +1,8 @@
+import { Injectable } from "@nestjs/common";
 import { PrismaClient } from "@prisma/client";
 import type { PriceListItemRepositoryPort } from "../../../application/ports/price-list-item-repository.port";
 
+@Injectable()
 export class PrismaPriceListItemRepository implements PriceListItemRepositoryPort {
   constructor(private readonly prisma: PrismaClient) {}
 

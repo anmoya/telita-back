@@ -15,43 +15,37 @@ import {
   StreamableFile,
   UnprocessableEntityException
 } from "@nestjs/common";
-import { AuditAction } from "@prisma/client";
 import { Headers } from "@nestjs/common";
 import { PrismaSalesRepository } from "../../infrastructure/persistence/prisma/prisma-sales.repository";
 import { PrismaScrapsRepository } from "../../../scraps/infrastructure/persistence/prisma/prisma-scraps.repository";
 import { PrismaAuditRepository } from "../../../../shared/infrastructure/persistence/prisma-audit.repository";
 import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
 import { prismaClient } from "../../../../shared/infrastructure/persistence/prisma-client";
+import {
+  AllocateScrapDto,
+  CommitAutoScrapAssignmentDto,
+  CancelSaleDto,
+  CreateSaleDraftDto,
+  CreateSaleFromQuoteDto,
+  OfferPreviewDto,
+  PickListDto,
+  SaleLineMutationDto,
+  UpdatePaymentSummaryDto,
+  UpdateSaleCustomerDto
+} from "../dto/sales.dto";
 
 @Controller("sales")
 export class SalesController {
-  private readonly repo = new PrismaSalesRepository();
-  private readonly scrapsRepo = new PrismaScrapsRepository();
-  private readonly auditRepo = new PrismaAuditRepository();
+  constructor(
+    private readonly repo: PrismaSalesRepository,
+    private readonly scrapsRepo: PrismaScrapsRepository,
+    private readonly auditRepo: PrismaAuditRepository
+  ) {}
 
   @Post("from-quote")
   @HttpCode(HttpStatus.OK)
   async createFromQuote(
-    @Body() body: {
-      branchCode: string;
-      priceListName: string;
-      customerId?: string;
-      customerName?: string;
-      customerReference?: string;
-      manualDiscountPct?: number;
-      manualDiscountReason?: string;
-      items: Array<{
-        skuCode: string;
-        requestedWidthM: number;
-        requestedHeightM: number;
-        quantity: number;
-        roomAreaName?: string;
-        categoryId?: string;
-        categoryName?: string;
-        displayOrder?: number;
-        lineNote?: string;
-      }>;
-    },
+    @Body() body: CreateSaleFromQuoteDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -80,16 +74,7 @@ export class SalesController {
 
   @Post()
   async createDraft(
-    @Body()
-    body: {
-      branchCode: string;
-      priceListName: string;
-      customerId?: string;
-      customerName?: string;
-      customerReference?: string;
-      manualDiscountPct?: number;
-      manualDiscountReason?: string;
-    },
+    @Body() body: CreateSaleDraftDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -105,23 +90,24 @@ export class SalesController {
   @Post(":saleId/lines")
   async addLine(
     @Param("saleId") saleId: string,
-    @Body() body: {
-      skuCode: string;
-      requestedWidthM: number;
-      requestedHeightM: number;
-      quantity: number;
-      roomAreaName?: string;
-      categoryId?: string;
-      categoryName?: string;
-      displayOrder?: number;
-      lineNote?: string;
-    },
+    @Body() body: SaleLineMutationDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     try {
-      await this.repo.addLine(saleId, { ...body, createdByEmail: auth.email });
+      await this.repo.addLine(saleId, {
+        skuCode: body.skuCode,
+        requestedWidthM: body.requestedWidthM,
+        requestedHeightM: body.requestedHeightM,
+        quantity: body.quantity,
+        roomAreaName: body.roomAreaName ?? undefined,
+        categoryId: body.categoryId ?? undefined,
+        categoryName: body.categoryName ?? undefined,
+        displayOrder: body.displayOrder,
+        lineNote: body.lineNote ?? undefined,
+        createdByEmail: auth.email
+      });
       return { ok: true };
     } catch (error) {
       throw new BadRequestException(getErrorMessage(error));
@@ -143,7 +129,7 @@ export class SalesController {
   @Post(":saleId/cancel")
   async cancel(
     @Param("saleId") saleId: string,
-    @Body() body: { canceledReason?: string },
+    @Body() body: CancelSaleDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -162,9 +148,9 @@ export class SalesController {
 
   @Post(":saleId/lines/:saleLineId/allocate-scrap")
   async allocateScrap(
-    @Param("saleId") _saleId: string,
+    @Param("saleId") saleId: string,
     @Param("saleLineId") saleLineId: string,
-    @Body() body: { scrapId: string },
+    @Body() body: AllocateScrapDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -172,6 +158,49 @@ export class SalesController {
     try {
       await this.scrapsRepo.allocateToSaleLine({
         saleLineId,
+        scrapId: body.scrapId,
+        allocatedByEmail: auth.email
+      });
+      return { ok: true };
+    } catch (error) {
+      throw new BadRequestException(getErrorMessage(error));
+    }
+  }
+
+  @Get(":saleId/lines/:saleLineId/compatible-scraps")
+  async listCompatibleScraps(
+    @Param("saleId") saleId: string,
+    @Param("saleLineId") saleLineId: string,
+    @Query("limit") limit = "5",
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      return await this.scrapsRepo.matchForSaleLine({
+        saleId,
+        saleLineId,
+        limit: Number(limit) > 0 ? Number(limit) : 5
+      });
+    } catch (error) {
+      throw new BadRequestException(getErrorMessage(error));
+    }
+  }
+
+  @Post(":saleId/lines/:saleLineId/pieces/:pieceId/allocate-scrap")
+  async allocateScrapToPiece(
+    @Param("saleId") _saleId: string,
+    @Param("saleLineId") saleLineId: string,
+    @Param("pieceId") pieceId: string,
+    @Body() body: AllocateScrapDto,
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      await this.scrapsRepo.allocateToSaleLinePiece({
+        saleLineId,
+        saleLinePieceId: pieceId,
         scrapId: body.scrapId,
         allocatedByEmail: auth.email
       });
@@ -197,17 +226,31 @@ export class SalesController {
     }
   }
 
+  @Delete(":saleId/lines/:saleLineId/pieces/:pieceId/allocate-scrap")
+  async releasePieceAllocation(
+    @Param("saleId") _saleId: string,
+    @Param("saleLineId") saleLineId: string,
+    @Param("pieceId") pieceId: string,
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      await this.scrapsRepo.releasePieceAllocation({
+        saleLineId,
+        saleLinePieceId: pieceId,
+        releasedByEmail: auth.email
+      });
+      return { ok: true };
+    } catch (error) {
+      throw new BadRequestException(getErrorMessage(error));
+    }
+  }
+
   @Patch(":saleId")
   async updateCustomer(
     @Param("saleId") saleId: string,
-    @Body()
-    body: {
-      customerId?: string | null;
-      customerName?: string | null;
-      customerReference?: string | null;
-      manualDiscountPct?: number | null;
-      manualDiscountReason?: string | null;
-    },
+    @Body() body: UpdateSaleCustomerDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -223,13 +266,46 @@ export class SalesController {
   @Patch(":saleId/payment-summary")
   async updatePaymentSummary(
     @Param("saleId") saleId: string,
-    @Body() body: { amountPaid: number },
+    @Body() body: UpdatePaymentSummaryDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     try {
       await this.repo.updatePaymentSummary(saleId, body.amountPaid);
+      return { ok: true };
+    } catch (error) {
+      throw new BadRequestException(getErrorMessage(error));
+    }
+  }
+
+  @Patch(":saleId/lines/:saleLineId")
+  async updateLine(
+    @Param("saleId") saleId: string,
+    @Param("saleLineId") saleLineId: string,
+    @Body() body: SaleLineMutationDto,
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      await this.repo.updateLine(saleId, saleLineId, auth.email, body);
+      return { ok: true };
+    } catch (error) {
+      throw new BadRequestException(getErrorMessage(error));
+    }
+  }
+
+  @Delete(":saleId/lines/:saleLineId")
+  async removeLine(
+    @Param("saleId") saleId: string,
+    @Param("saleLineId") saleLineId: string,
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      await this.repo.removeLine(saleId, saleLineId, auth.email);
       return { ok: true };
     } catch (error) {
       throw new BadRequestException(getErrorMessage(error));
@@ -270,38 +346,60 @@ export class SalesController {
       totalAmount: Number(sale.totalAmount),
       amountPaid: Number(sale.amountPaid),
       balanceDue: Number(sale.balanceDue),
-      lines: sale.lines.map((line) => ({
-        id: line.id,
-        skuCode: line.sku.code,
-        quantity: line.quantity,
-        requestedWidthM: Number(line.requestedWidthM),
-        requestedHeightM: Number(line.requestedHeightM),
-        unitPrice: Number(line.unitPrice),
-        lineTotal: Number(line.lineTotal),
-        allocatedScrapId: line.allocations[0]?.scrapId ?? null,
-        categoryId: line.categoryId ?? null,
-        categoryName: line.category?.name ?? null,
-        displayOrder: line.displayOrder,
-        lineNote: line.lineNote ?? null,
-        roomAreaName: line.roomAreaName ?? null,
-        discountPct: Number(line.discountPct),
-        lineSubtotal: Number(line.lineSubtotal),
-        pieces: line.pieces.map((piece) => ({
-          id: piece.id,
-          pieceIndex: piece.pieceIndex,
-          pieceTotal: piece.pieceTotal,
-          requestedWidthM: Number(piece.requestedWidthM),
-          requestedHeightM: Number(piece.requestedHeightM),
-          roomAreaName: piece.roomAreaName ?? null
-        }))
-      }))
+      lines: sale.lines.map((line) => {
+        const allocatedPieces = line.pieces
+          .map((piece) => {
+            const allocation = piece.allocations[0];
+            if (!allocation) return null;
+            return {
+              scrapId: allocation.scrapId,
+              locationCode: allocation.scrap.location?.code ?? null
+            };
+          })
+          .filter((value): value is { scrapId: string; locationCode: string | null } => Boolean(value));
+
+        return {
+          id: line.id,
+          skuCode: line.sku.code,
+          quantity: line.quantity,
+          requestedWidthM: Number(line.requestedWidthM),
+          requestedHeightM: Number(line.requestedHeightM),
+          unitPrice: Number(line.unitPrice),
+          lineTotal: Number(line.lineTotal),
+          allocatedScrapId: allocatedPieces[0]?.scrapId ?? null,
+          allocatedScrapPositions: allocatedPieces
+            .map((piece) => piece.locationCode)
+            .filter((locationCode): locationCode is string => Boolean(locationCode)),
+          categoryId: line.categoryId ?? null,
+          categoryName: line.category?.name ?? null,
+          displayOrder: line.displayOrder,
+          lineNote: line.lineNote ?? null,
+          roomAreaName: line.roomAreaName ?? null,
+          discountPct: Number(line.discountPct),
+          lineSubtotal: Number(line.lineSubtotal),
+          pieces: line.pieces.map((piece) => ({
+            id: piece.id,
+            pieceIndex: piece.pieceIndex,
+            pieceTotal: piece.pieceTotal,
+            requestedWidthM: Number(piece.requestedWidthM),
+            requestedHeightM: Number(piece.requestedHeightM),
+            roomAreaName: piece.roomAreaName ?? null,
+            allocation: piece.allocations[0]
+              ? {
+                  scrapId: piece.allocations[0].scrapId,
+                  locationCode: piece.allocations[0].scrap.location?.code ?? null
+                }
+              : null
+          }))
+        };
+      })
     }));
   }
 
   @Post(":saleId/compatible-scraps/offer-preview")
   async offerPreview(
     @Param("saleId") saleId: string,
-    @Body() body: { lineIds?: string[]; limitPerLine?: number },
+    @Body() body: OfferPreviewDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -319,7 +417,7 @@ export class SalesController {
           actorUserId: user.id,
           entityType: "sale",
           entityId: saleId,
-          action: AuditAction.STATUS_CHANGE,
+          action: "STATUS_CHANGE",
           afterJson: {
             event: "SCRAP_OFFER_PREVIEW_CREATED",
             linesChecked: result.lines.length,
@@ -334,11 +432,59 @@ export class SalesController {
     }
   }
 
+  @Post(":saleId/auto-scrap-assignment/preview")
+  async previewAutoScrapAssignment(
+    @Param("saleId") saleId: string,
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      const result = await this.scrapsRepo.previewAutoAssignment({ saleId });
+      const user = await prismaClient.appUser.findUnique({ where: { email: auth.email } });
+      if (user) {
+        await this.auditRepo.log({
+          actorUserId: user.id,
+          entityType: "sale",
+          entityId: saleId,
+          action: "STATUS_CHANGE",
+          afterJson: {
+            event: "AUTO_SCRAP_ASSIGNMENT_PREVIEW_CREATED",
+            assignedPieces: result.summary.assignedPieces,
+            unmatchedPieces: result.summary.unmatchedPieces
+          }
+        });
+      }
+      return result;
+    } catch (error) {
+      throw new BadRequestException(getErrorMessage(error));
+    }
+  }
+
+  @Post(":saleId/auto-scrap-assignment/commit")
+  async commitAutoScrapAssignment(
+    @Param("saleId") saleId: string,
+    @Body() body: CommitAutoScrapAssignmentDto,
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      return await this.scrapsRepo.commitAutoAssignment({
+        saleId,
+        allocatedByEmail: auth.email,
+        items: body.items
+      });
+    } catch (error) {
+      throw new BadRequestException(getErrorMessage(error));
+    }
+  }
+
   @Post(":saleId/compatible-scraps/pick-list")
   @Header("Content-Type", "text/html; charset=utf-8")
   async pickList(
     @Param("saleId") saleId: string,
-    @Body() body: { items: Array<{ saleLineId: string; scrapId: string }> },
+    @Body() body: PickListDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -396,7 +542,7 @@ export class SalesController {
           actorUserId: user.id,
           entityType: "sale",
           entityId: saleId,
-          action: AuditAction.STATUS_CHANGE,
+          action: "STATUS_CHANGE",
           afterJson: {
             event: "SCRAP_PICK_LIST_CREATED",
             itemCount: pickItems.length
@@ -414,37 +560,37 @@ export class SalesController {
 
   @Get(":saleId/print/sale/html")
   @Header("Content-Type", "text/html; charset=utf-8")
-  async printSaleHtml(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string, @Query("accessToken") accessToken?: string) {
-    const auth = requireAuth(authorization ?? (accessToken ? `Bearer ${accessToken}` : undefined));
+  async printSaleHtml(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string) {
+    const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const sale = await getSalePrintable(saleId);
+    const sale = await this.repo.getPrintableSale(saleId);
     return new StreamableFile(Buffer.from(renderSaleDocumentHtml(sale, "sale"), "utf-8"), { type: "text/html; charset=utf-8" });
   }
 
   @Get(":saleId/print/work-order/html")
   @Header("Content-Type", "text/html; charset=utf-8")
-  async printWorkOrderHtml(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string, @Query("accessToken") accessToken?: string) {
-    const auth = requireAuth(authorization ?? (accessToken ? `Bearer ${accessToken}` : undefined));
+  async printWorkOrderHtml(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string) {
+    const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const sale = await getSalePrintable(saleId);
+    const sale = await this.repo.getPrintableSale(saleId);
     return new StreamableFile(Buffer.from(renderSaleDocumentHtml(sale, "work-order"), "utf-8"), { type: "text/html; charset=utf-8" });
   }
 
   @Get(":saleId/print/sale/zpl")
   @Header("Content-Type", "text/plain; charset=utf-8")
-  async printSaleZpl(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string, @Query("accessToken") accessToken?: string) {
-    const auth = requireAuth(authorization ?? (accessToken ? `Bearer ${accessToken}` : undefined));
+  async printSaleZpl(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string) {
+    const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const sale = await getSalePrintable(saleId);
+    const sale = await this.repo.getPrintableSale(saleId);
     return new StreamableFile(Buffer.from(renderSaleDocumentZpl(sale, "sale"), "utf-8"), { type: "text/plain; charset=utf-8" });
   }
 
   @Get(":saleId/print/work-order/zpl")
   @Header("Content-Type", "text/plain; charset=utf-8")
-  async printWorkOrderZpl(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string, @Query("accessToken") accessToken?: string) {
-    const auth = requireAuth(authorization ?? (accessToken ? `Bearer ${accessToken}` : undefined));
+  async printWorkOrderZpl(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string) {
+    const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const sale = await getSalePrintable(saleId);
+    const sale = await this.repo.getPrintableSale(saleId);
     return new StreamableFile(Buffer.from(renderSaleDocumentZpl(sale, "work-order"), "utf-8"), { type: "text/plain; charset=utf-8" });
   }
 }
@@ -454,27 +600,7 @@ function getErrorMessage(error: unknown): string {
   return "Unexpected error";
 }
 
-async function getSalePrintable(saleId: string) {
-  const sale = await prismaClient.sale.findUnique({
-    where: { id: saleId },
-    include: {
-      branch: true,
-      customer: true,
-      priceList: true,
-      lines: {
-        include: {
-          sku: true,
-          pieces: { orderBy: { pieceIndex: "asc" } }
-        },
-        orderBy: { displayOrder: "asc" }
-      }
-    }
-  });
-  if (!sale) throw new BadRequestException("Venta no encontrada.");
-  return sale;
-}
-
-function renderSaleDocumentHtml(sale: Awaited<ReturnType<typeof getSalePrintable>>, mode: "sale" | "work-order") {
+function renderSaleDocumentHtml(sale: Awaited<ReturnType<PrismaSalesRepository["getPrintableSale"]>>, mode: "sale" | "work-order") {
   const showPrices = mode === "sale";
   const lineRows = sale.lines.map((line, index) => `
     <tr>
@@ -544,7 +670,7 @@ function renderSaleDocumentHtml(sale: Awaited<ReturnType<typeof getSalePrintable
 </html>`;
 }
 
-function renderSaleDocumentZpl(sale: Awaited<ReturnType<typeof getSalePrintable>>, mode: "sale" | "work-order") {
+function renderSaleDocumentZpl(sale: Awaited<ReturnType<PrismaSalesRepository["getPrintableSale"]>>, mode: "sale" | "work-order") {
   const lines = sale.lines.slice(0, 8).map((line, index) =>
     `^FO40,${140 + index * 36}^A0N,24,24^FD${zplSafe(index + 1)} ${zplSafe(line.sku.code)} ${zplSafe(`${Number(line.requestedWidthM)}x${Number(line.requestedHeightM)}`)} ${zplSafe(line.roomAreaName ?? "")}^FS`
   ).join("\n");

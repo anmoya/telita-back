@@ -1,9 +1,11 @@
+import { Injectable } from "@nestjs/common";
 import { AuditAction, ScrapStatus, SoftHoldStatus } from "@prisma/client";
 import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 import { PrismaSettingsRepository } from "../../../../settings/infrastructure/persistence/prisma/prisma-settings.repository";
 import { evaluateScrapRule, type ScrapLocationPolicy, type ScrapRuleContext } from "../../../domain/scrap-policy";
 
+@Injectable()
 export class PrismaScrapsRepository {
   private readonly auditRepo = new PrismaAuditRepository();
   private readonly settingsRepo = new PrismaSettingsRepository();
@@ -179,6 +181,8 @@ export class PrismaScrapsRepository {
     lineIds?: string[];
     limitPerLine: number;
   }) {
+    await this.expireStaleHolds();
+
     const sale = await prismaClient.sale.findUnique({
       where: { id: params.saleId },
       include: {
@@ -186,7 +190,11 @@ export class PrismaScrapsRepository {
         lines: {
           include: {
             sku: true,
-            allocations: { where: { isActive: true }, select: { scrapId: true } }
+            pieces: {
+              include: {
+                allocations: { where: { isActive: true }, select: { id: true } }
+              }
+            }
           },
           orderBy: { displayOrder: "asc" }
         }
@@ -198,8 +206,7 @@ export class PrismaScrapsRepository {
       ? sale.lines.filter((l) => params.lineIds!.includes(l.id))
       : sale.lines;
 
-    // Only check lines without active allocation
-    const eligibleLines = linesToCheck.filter((l) => l.allocations.length === 0);
+    const eligibleLines = linesToCheck.filter((line) => line.pieces.some((piece) => piece.allocations.length === 0));
 
     const results: Array<{
       saleLineId: string;
@@ -254,7 +261,96 @@ export class PrismaScrapsRepository {
     return { saleId: sale.id, lines: results };
   }
 
+  async matchForSaleLine(params: { saleId: string; saleLineId: string; limit?: number }) {
+    await this.expireStaleHolds();
+
+    const line = await prismaClient.saleLine.findFirst({
+      where: { id: params.saleLineId, saleId: params.saleId },
+      include: {
+        sku: true,
+        sale: { include: { branch: true } },
+        pieces: {
+          include: {
+            allocations: { where: { isActive: true }, select: { id: true } }
+          },
+          orderBy: { pieceIndex: "asc" }
+        }
+      }
+    });
+    if (!line) throw new Error("Línea de venta no encontrada.");
+
+    const freePieces = line.pieces.filter((piece) => piece.allocations.length === 0);
+    const matches = freePieces.length > 0
+      ? await this.match({
+          branchCode: line.sale.branch.code,
+          skuCode: line.sku.code,
+          requestedWidthM: Number(line.requestedWidthM),
+          requestedHeightM: Number(line.requestedHeightM),
+          limit: params.limit ?? 5
+        })
+      : [];
+
+    const labels = await prismaClient.label.findMany({
+      where: { scrapId: { in: matches.map((match) => match.id) } },
+      select: { scrapId: true, id: true }
+    });
+    const labelMap = new Map(labels.map((label) => [label.scrapId, label.id.slice(0, 8)]));
+
+    return {
+      saleId: params.saleId,
+      saleLineId: line.id,
+      skuCode: line.sku.code,
+      requestedWidthM: Number(line.requestedWidthM),
+      requestedHeightM: Number(line.requestedHeightM),
+      freePieces: freePieces.map((piece) => ({
+        id: piece.id,
+        pieceIndex: piece.pieceIndex,
+        pieceTotal: piece.pieceTotal
+      })),
+      suggestions: matches.map((match) => ({
+        scrapId: match.id,
+        labelCode: labelMap.get(match.id) ?? match.id.slice(0, 8),
+        locationCode: match.location?.code ?? null,
+        widthM: Number(match.widthM),
+        heightM: Number(match.heightM),
+        areaM2: Number(match.areaM2),
+        excessAreaM2: Number(match.excessAreaM2.toFixed(3)),
+        createdAt: match.createdAt.toISOString()
+      }))
+    };
+  }
+
   async allocateToSaleLine(input: { saleLineId: string; scrapId: string; allocatedByEmail: string }) {
+    const line = await prismaClient.saleLine.findUnique({
+      where: { id: input.saleLineId },
+      include: {
+        pieces: {
+          include: {
+            allocations: { where: { isActive: true }, select: { id: true } }
+          },
+          orderBy: { pieceIndex: "asc" }
+        }
+      }
+    });
+    if (!line) throw new Error("Línea de venta no encontrada.");
+
+    const freePiece = line.pieces.find((piece) => piece.allocations.length === 0);
+    if (!freePiece) throw new Error("La línea no tiene piezas libres para asignar retazos.");
+
+    return this.allocateToSaleLinePiece({
+      saleLineId: input.saleLineId,
+      saleLinePieceId: freePiece.id,
+      scrapId: input.scrapId,
+      allocatedByEmail: input.allocatedByEmail
+    });
+  }
+
+  async allocateToSaleLinePiece(input: {
+    saleLineId: string;
+    saleLinePieceId: string;
+    scrapId: string;
+    allocatedByEmail: string;
+  }) {
     const user = await prismaClient.appUser.findUnique({ where: { email: input.allocatedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
@@ -277,19 +373,27 @@ export class PrismaScrapsRepository {
 
     const saleLine = await prismaClient.saleLine.findUnique({
       where: { id: input.saleLineId },
-      include: { sale: true }
+      include: {
+        sale: true,
+        pieces: {
+          where: { id: input.saleLinePieceId },
+          include: { allocations: { where: { isActive: true }, select: { id: true } } }
+        }
+      }
     });
     if (!saleLine) throw new Error("Línea de venta no encontrada.");
     if (saleLine.sale.status !== "DRAFT") throw new Error("Solo se puede asignar a líneas de venta en estado DRAFT.");
+    const piece = saleLine.pieces[0];
+    if (!piece) throw new Error("Pieza de venta no encontrada.");
 
-    const lineAllocation = await prismaClient.saleLineScrapAllocation.findFirst({
-      where: { saleLineId: input.saleLineId, isActive: true }
-    });
-    if (lineAllocation) throw new Error("La línea de venta ya tiene una asignación activa.");
+    if (piece.allocations.length > 0) {
+      throw new Error("La pieza de venta ya tiene una asignación activa.");
+    }
 
     const allocation = await prismaClient.saleLineScrapAllocation.create({
       data: {
         saleLineId: input.saleLineId,
+        saleLinePieceId: input.saleLinePieceId,
         scrapId: input.scrapId,
         allocatedBy: user.id,
         allocatedAt: new Date()
@@ -319,20 +423,46 @@ export class PrismaScrapsRepository {
       entityType: "sale_line_scrap_allocation",
       entityId: allocation.id,
       action: AuditAction.CREATE,
-      afterJson: { saleLineId: input.saleLineId, scrapId: input.scrapId }
+      afterJson: {
+        saleLineId: input.saleLineId,
+        saleLinePieceId: input.saleLinePieceId,
+        scrapId: input.scrapId
+      }
     });
     return allocation;
   }
 
   async releaseAllocation(input: { saleLineId: string; releasedByEmail: string }) {
+    const allocation = await prismaClient.saleLineScrapAllocation.findFirst({
+      where: { saleLineId: input.saleLineId, isActive: true },
+      orderBy: { allocatedAt: "asc" }
+    });
+    if (!allocation) throw new Error("No existe una asignación activa para esta línea de venta.");
+
+    return this.releasePieceAllocation({
+      saleLineId: input.saleLineId,
+      saleLinePieceId: allocation.saleLinePieceId,
+      releasedByEmail: input.releasedByEmail
+    });
+  }
+
+  async releasePieceAllocation(input: {
+    saleLineId: string;
+    saleLinePieceId: string;
+    releasedByEmail: string;
+  }) {
     const user = await prismaClient.appUser.findUnique({ where: { email: input.releasedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
     const allocation = await prismaClient.saleLineScrapAllocation.findFirst({
-      where: { saleLineId: input.saleLineId, isActive: true },
+      where: {
+        saleLineId: input.saleLineId,
+        saleLinePieceId: input.saleLinePieceId,
+        isActive: true
+      },
       include: { scrap: true }
     });
-    if (!allocation) throw new Error("No existe una asignación activa para esta línea de venta.");
+    if (!allocation) throw new Error("No existe una asignación activa para esta pieza de venta.");
 
     const saleLine = await prismaClient.saleLine.findUnique({
       where: { id: input.saleLineId },
@@ -351,9 +481,239 @@ export class PrismaScrapsRepository {
       entityType: "sale_line_scrap_allocation",
       entityId: allocation.id,
       action: AuditAction.STATUS_CHANGE,
-      beforeJson: { isActive: true },
-      afterJson: { isActive: false, releasedAt: new Date().toISOString() }
+      beforeJson: { isActive: true, saleLinePieceId: input.saleLinePieceId },
+      afterJson: {
+        isActive: false,
+        saleLinePieceId: input.saleLinePieceId,
+        releasedAt: new Date().toISOString()
+      }
     });
+  }
+
+  async previewAutoAssignment(params: { saleId: string; limitPerPiece?: number }) {
+    await this.expireStaleHolds();
+
+    const sale = await prismaClient.sale.findUnique({
+      where: { id: params.saleId },
+      include: {
+        branch: true,
+        lines: {
+          include: {
+            sku: true,
+            pieces: {
+              include: {
+                allocations: {
+                  where: { isActive: true },
+                  select: { id: true }
+                }
+              },
+              orderBy: { pieceIndex: "asc" }
+            }
+          },
+          orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }]
+        }
+      }
+    });
+    if (!sale) throw new Error("Venta no encontrada.");
+    if (sale.status !== "DRAFT") throw new Error("La autoasignación solo está disponible para ventas DRAFT.");
+
+    const limit = Math.max(1, Math.min(params.limitPerPiece ?? 10, 20));
+    const reservedScrapIds = new Set<string>();
+    const items: Array<{
+      saleLineId: string;
+      saleLinePieceId: string;
+      pieceIndex: number;
+      pieceTotal: number;
+      skuCode: string;
+      requestedWidthM: number;
+      requestedHeightM: number;
+      scrapId: string;
+      labelCode: string;
+      locationCode: string | null;
+      widthM: number;
+      heightM: number;
+      areaM2: number;
+      excessAreaM2: number;
+    }> = [];
+    const unmatchedPieces: Array<{
+      saleLineId: string;
+      saleLinePieceId: string;
+      pieceIndex: number;
+      pieceTotal: number;
+      skuCode: string;
+      requestedWidthM: number;
+      requestedHeightM: number;
+    }> = [];
+
+    for (const line of sale.lines) {
+      for (const piece of line.pieces) {
+        if (piece.allocations.length > 0) continue;
+
+        const matches = await this.match({
+          branchCode: sale.branch.code,
+          skuCode: line.sku.code,
+          requestedWidthM: Number(piece.requestedWidthM),
+          requestedHeightM: Number(piece.requestedHeightM),
+          limit
+        });
+
+        const chosen = matches.find((match) => !reservedScrapIds.has(match.id));
+        if (!chosen) {
+          unmatchedPieces.push({
+            saleLineId: line.id,
+            saleLinePieceId: piece.id,
+            pieceIndex: piece.pieceIndex,
+            pieceTotal: piece.pieceTotal,
+            skuCode: line.sku.code,
+            requestedWidthM: Number(piece.requestedWidthM),
+            requestedHeightM: Number(piece.requestedHeightM)
+          });
+          continue;
+        }
+
+        reservedScrapIds.add(chosen.id);
+        const label = await prismaClient.label.findFirst({
+          where: { scrapId: chosen.id },
+          select: { id: true }
+        });
+
+        items.push({
+          saleLineId: line.id,
+          saleLinePieceId: piece.id,
+          pieceIndex: piece.pieceIndex,
+          pieceTotal: piece.pieceTotal,
+          skuCode: line.sku.code,
+          requestedWidthM: Number(piece.requestedWidthM),
+          requestedHeightM: Number(piece.requestedHeightM),
+          scrapId: chosen.id,
+          labelCode: label?.id.slice(0, 8) ?? chosen.id.slice(0, 8),
+          locationCode: chosen.location?.code ?? null,
+          widthM: Number(chosen.widthM),
+          heightM: Number(chosen.heightM),
+          areaM2: Number(chosen.areaM2),
+          excessAreaM2: Number(chosen.excessAreaM2.toFixed(3))
+        });
+      }
+    }
+
+    return {
+      saleId: sale.id,
+      strategy: "BEST_FIT",
+      items,
+      unmatchedPieces,
+      summary: {
+        assignedPieces: items.length,
+        unmatchedPieces: unmatchedPieces.length,
+        totalPieces: items.length + unmatchedPieces.length
+      }
+    };
+  }
+
+  async commitAutoAssignment(input: {
+    saleId: string;
+    allocatedByEmail: string;
+    items: Array<{ saleLineId: string; saleLinePieceId: string; scrapId: string }>;
+  }) {
+    const user = await prismaClient.appUser.findUnique({ where: { email: input.allocatedByEmail } });
+    if (!user) throw new Error("Usuario no encontrado.");
+    if (input.items.length === 0) throw new Error("No hay items para autoasignar.");
+
+    const uniquePieceIds = new Set(input.items.map((item) => item.saleLinePieceId));
+    const uniqueScrapIds = new Set(input.items.map((item) => item.scrapId));
+    if (uniquePieceIds.size !== input.items.length) throw new Error("La propuesta repite piezas.");
+    if (uniqueScrapIds.size !== input.items.length) throw new Error("La propuesta repite retazos.");
+
+    const sale = await prismaClient.sale.findUnique({ where: { id: input.saleId } });
+    if (!sale) throw new Error("Venta no encontrada.");
+    if (sale.status !== "DRAFT") throw new Error("La autoasignación solo está disponible para ventas DRAFT.");
+
+    const result = await prismaClient.$transaction(async (tx) => {
+      const pieces = await tx.saleLinePiece.findMany({
+        where: { id: { in: [...uniquePieceIds] }, saleLine: { saleId: input.saleId } },
+        include: {
+          saleLine: true,
+          allocations: { where: { isActive: true }, select: { id: true } }
+        }
+      });
+      if (pieces.length !== input.items.length) {
+        throw new Error("La propuesta contiene piezas inválidas para esta venta.");
+      }
+      if (pieces.some((piece) => piece.allocations.length > 0)) {
+        throw new Error("Al menos una pieza ya tiene un retazo asignado. Recalcula la autoasignación.");
+      }
+
+      const scraps = await tx.scrap.findMany({
+        where: { id: { in: [...uniqueScrapIds] } }
+      });
+      if (scraps.length !== input.items.length) {
+        throw new Error("La propuesta contiene retazos inválidos.");
+      }
+      if (scraps.some((scrap) => scrap.status !== ScrapStatus.STORED)) {
+        throw new Error("Al menos un retazo ya no está disponible. Recalcula la autoasignación.");
+      }
+
+      const activeAllocations = await tx.saleLineScrapAllocation.findMany({
+        where: { scrapId: { in: [...uniqueScrapIds] }, isActive: true },
+        select: { scrapId: true }
+      });
+      if (activeAllocations.length > 0) {
+        throw new Error("Al menos un retazo ya fue asignado por otro contexto. Recalcula la autoasignación.");
+      }
+
+      const activeHolds = await tx.scrapSoftHold.findMany({
+        where: {
+          scrapId: { in: [...uniqueScrapIds] },
+          status: SoftHoldStatus.ACTIVE,
+          expiresAt: { gt: new Date() }
+        }
+      });
+      const foreignHold = activeHolds.find((hold) => hold.heldBy !== user.id);
+      if (foreignHold) {
+        throw new Error("Al menos un retazo está reservado temporalmente por otro usuario.");
+      }
+
+      const created = [];
+      for (const item of input.items) {
+        const allocation = await tx.saleLineScrapAllocation.create({
+          data: {
+            saleLineId: item.saleLineId,
+            saleLinePieceId: item.saleLinePieceId,
+            scrapId: item.scrapId,
+            allocatedBy: user.id,
+            allocatedAt: new Date()
+          }
+        });
+        created.push(allocation);
+      }
+
+      if (activeHolds.length > 0) {
+        await tx.scrapSoftHold.updateMany({
+          where: { id: { in: activeHolds.map((hold) => hold.id) } },
+          data: { status: SoftHoldStatus.CONVERTED, convertedAt: new Date() }
+        });
+      }
+
+      return created;
+    });
+
+    for (const allocation of result) {
+      await this.auditRepo.log({
+        branchId: sale.branchId,
+        actorUserId: user.id,
+        entityType: "sale_line_scrap_allocation",
+        entityId: allocation.id,
+        action: AuditAction.CREATE,
+        afterJson: {
+          saleId: input.saleId,
+          saleLineId: allocation.saleLineId,
+          saleLinePieceId: allocation.saleLinePieceId,
+          scrapId: allocation.scrapId,
+          source: "AUTO_ASSIGNMENT"
+        }
+      });
+    }
+
+    return { ok: true, assignedCount: result.length };
   }
 
   async registerFromCutJob(input: {
@@ -444,20 +804,38 @@ export class PrismaScrapsRepository {
     return { ...scrap, isUseful };
   }
 
-  async list(params: { branchCode?: string; status?: string }) {
+  async list(params: { branchCode?: string; status?: string; page?: number; limit?: number }) {
     const status = parseScrapStatus(params.status);
-    return prismaClient.scrap.findMany({
-      where: {
-        branch: params.branchCode ? { code: params.branchCode } : undefined,
-        status
-      },
-      include: {
-        location: true,
-        sku: true,
-        quote: true
-      },
-      orderBy: { createdAt: "desc" }
-    });
+    const limit = Math.min(params.limit ?? 8, 100);
+    const page = Math.max(params.page ?? 1, 1);
+    const skip = (page - 1) * limit;
+    const where = {
+      branch: params.branchCode ? { code: params.branchCode } : undefined,
+      status
+    };
+
+    const [data, total] = await Promise.all([
+      prismaClient.scrap.findMany({
+        where,
+        include: {
+          location: true,
+          sku: true,
+          quote: true
+        },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit
+      }),
+      prismaClient.scrap.count({ where })
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    };
   }
 
   async createStorageLocation(input: {

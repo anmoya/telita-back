@@ -77,22 +77,36 @@ export class ScrapsController {
   async list(
     @Query("branchCode") branchCode?: string,
     @Query("status") status?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     const typedStatus = status ? status.toUpperCase() : undefined;
-    const scraps = await this.repo.list({ branchCode, status: typedStatus });
-    return scraps.map((scrap) => ({
-      id: scrap.id,
-      status: scrap.status,
-      areaM2: Number(scrap.areaM2),
-      widthM: Number(scrap.widthM),
-      heightM: Number(scrap.heightM),
-      skuCode: scrap.sku.code,
-      locationCode: scrap.location?.code ?? null,
-      quoteId: scrap.quoteId
-    }));
+    const result = await this.repo.list({
+      branchCode,
+      status: typedStatus,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined
+    });
+    return {
+      data: result.data.map((scrap) => ({
+        id: scrap.id,
+        status: scrap.status,
+        areaM2: Number(scrap.areaM2),
+        widthM: Number(scrap.widthM),
+        heightM: Number(scrap.heightM),
+        skuCode: scrap.sku.code,
+        locationCode: scrap.location?.code ?? null,
+        quoteId: scrap.quoteId,
+        createdAt: scrap.createdAt.toISOString()
+      })),
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+      totalPages: result.totalPages
+    };
   }
 
   @Patch(":id/assign-location")

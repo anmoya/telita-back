@@ -1,9 +1,9 @@
 import { Injectable } from "@nestjs/common";
-import { PrismaStatusLabelRepository, GroupedStatusLabels } from "../../infrastructure/persistence/prisma/prisma-status-label.repository";
+import { GroupedStatusLabels, StatusLabelsRepositoryPort } from "../ports/status-labels.repository.port";
 
 @Injectable()
 export class GetStatusLabelsUseCase {
-  constructor(private readonly repository: PrismaStatusLabelRepository) {}
+  constructor(private readonly repository: StatusLabelsRepositoryPort) {}
 
   async execute(): Promise<GroupedStatusLabels> {
     return this.repository.getAllGrouped();

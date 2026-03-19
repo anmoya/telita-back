@@ -1,7 +1,9 @@
+import { Injectable } from "@nestjs/common";
 import { AuditAction, LabelType, PrintChannel, Prisma } from "@prisma/client";
 import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 
+@Injectable()
 export class PrismaLabelsRepository {
   private readonly auditRepo = new PrismaAuditRepository();
 
@@ -199,21 +201,45 @@ export class PrismaLabelsRepository {
     return results;
   }
 
-  async list(params: { branchCode?: string; saleLineId?: string; scrapId?: string; quoteId?: string }) {
+  async list(params: {
+    branchCode?: string;
+    saleLineId?: string;
+    scrapId?: string;
+    quoteId?: string;
+    type?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const limit = Math.min(params.limit ?? 8, 100);
+    const page = Math.max(params.page ?? 1, 1);
+    const skip = (page - 1) * limit;
     const where: Prisma.LabelWhereInput = {
       branch: params.branchCode ? { code: params.branchCode } : undefined,
+      type: params.type === "SALE_CUT" || params.type === "SCRAP" ? params.type : undefined,
       saleLineId: params.saleLineId,
       scrapId: params.scrapId,
       quoteId: params.quoteId
     };
-    return prismaClient.label.findMany({
-      where,
-      include: {
-        printEvents: { orderBy: { printedAt: "desc" }, take: 1 }
-      },
-      orderBy: { createdAt: "desc" },
-      take: 100
-    });
+    const [data, total] = await Promise.all([
+      prismaClient.label.findMany({
+        where,
+        include: {
+          printEvents: { orderBy: { printedAt: "desc" }, take: 1 }
+        },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit
+      }),
+      prismaClient.label.count({ where })
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    };
   }
 
   async getHtmlContent(labelId: string): Promise<Buffer> {

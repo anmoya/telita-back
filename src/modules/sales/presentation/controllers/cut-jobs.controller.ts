@@ -1,5 +1,4 @@
 import { BadRequestException, Body, Controller, Get, Headers, Param, Post, Query } from "@nestjs/common";
-import { AuditAction } from "@prisma/client";
 import { PrismaSalesRepository } from "../../infrastructure/persistence/prisma/prisma-sales.repository";
 import { PrismaScrapsRepository } from "../../../scraps/infrastructure/persistence/prisma/prisma-scraps.repository";
 import { PrismaSettingsRepository } from "../../../settings/infrastructure/persistence/prisma/prisma-settings.repository";
@@ -9,23 +8,34 @@ import { requireAnyRole, requireAuth } from "../../../../shared/presentation/aut
 
 @Controller("cut-jobs")
 export class CutJobsController {
-  private readonly repo = new PrismaSalesRepository();
-  private readonly scrapsRepo = new PrismaScrapsRepository();
-  private readonly settingsRepo = new PrismaSettingsRepository();
-  private readonly auditRepo = new PrismaAuditRepository();
+  constructor(
+    private readonly repo: PrismaSalesRepository,
+    private readonly scrapsRepo: PrismaScrapsRepository,
+    private readonly settingsRepo: PrismaSettingsRepository,
+    private readonly auditRepo: PrismaAuditRepository
+  ) {}
 
   @Get()
   async list(
     @Query("saleId") saleId?: string,
     @Query("branchCode") branchCode = "MAIN",
     @Query("status") status?: string,
+    @Query("page") page?: string,
+    @Query("limit") limit?: string,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     const parsedStatus = parseCutJobStatus(status);
-    const rows = await this.repo.listCutJobs({ saleId, branchCode, status: parsedStatus });
-    return rows.map((row) => ({
+    const result = await this.repo.listCutJobs({
+      saleId,
+      branchCode,
+      status: parsedStatus,
+      page: page ? Number(page) : undefined,
+      limit: limit ? Number(limit) : undefined
+    });
+    return {
+      data: result.data.map((row) => ({
       id: row.id,
       saleId: row.saleLine.saleId,
       saleLineId: row.saleLineId,
@@ -37,7 +47,12 @@ export class CutJobsController {
       skuCode: row.saleLine.sku.code,
       skuName: row.saleLine.sku.name,
       saleCreatedAt: row.saleLine.sale.createdAt.toISOString()
-    }));
+      })),
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+      totalPages: result.totalPages
+    };
   }
 
   @Get(":cutJobId/compatible-scraps")
@@ -65,7 +80,7 @@ export class CutJobsController {
           actorUserId: user.id,
           entityType: "cut_job",
           entityId: cutJobId,
-          action: AuditAction.STATUS_CHANGE,
+          action: "STATUS_CHANGE",
           afterJson: {
             event: "CUT_COMPATIBLE_SCRAPS_CHECKED",
             suggestionsFound: result.lines.reduce((acc, l) => acc + l.suggestions.length, 0),

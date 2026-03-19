@@ -14,12 +14,19 @@ import {
 import { PrismaUsersRepository } from "../../infrastructure/persistence/prisma/prisma-users.repository";
 import { BcryptPasswordHasher } from "../../../../shared/infrastructure/auth/bcrypt-password-hasher";
 import { requireAuth, requireAnyRole } from "../../../../shared/presentation/auth";
-import type { UserRole } from "../../application/ports/user-repository.port";
+import {
+  ChangePasswordDto,
+  CreateUserDto,
+  UpdateUserDto,
+  UpdateUserStatusDto
+} from "../dto/users.dto";
 
 @Controller("users")
 export class UsersController {
-  private readonly repo = new PrismaUsersRepository();
-  private readonly hasher = new BcryptPasswordHasher();
+  constructor(
+    private readonly repo: PrismaUsersRepository,
+    private readonly hasher: BcryptPasswordHasher
+  ) {}
 
   /** GET /v1/users?branchCode= */
   @Get()
@@ -47,17 +54,7 @@ export class UsersController {
 
   /** POST /v1/users */
   @Post()
-  async create(
-    @Body()
-    body: {
-      email: string;
-      fullName: string;
-      role: UserRole;
-      branchCode: string;
-      password: string;
-    },
-    @Headers("authorization") authorization?: string
-  ) {
+  async create(@Body() body: CreateUserDto, @Headers("authorization") authorization?: string) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin"]);
 
@@ -81,7 +78,7 @@ export class UsersController {
   @Put(":id")
   async update(
     @Param("id") id: string,
-    @Body() body: { fullName?: string; role?: UserRole; branchCode?: string },
+    @Body() body: UpdateUserDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -112,7 +109,7 @@ export class UsersController {
   @Patch(":id/password")
   async changePassword(
     @Param("id") id: string,
-    @Body() body: { currentPassword: string; newPassword: string },
+    @Body() body: ChangePasswordDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -141,7 +138,7 @@ export class UsersController {
   @Patch(":id/status")
   async setStatus(
     @Param("id") id: string,
-    @Body() body: { isActive: boolean },
+    @Body() body: UpdateUserStatusDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -154,12 +151,7 @@ export class UsersController {
   }
 
   private async getActorBranchCode(actorId: string): Promise<string> {
-    const { prismaClient } = await import("../../../../shared/infrastructure/persistence/prisma-client");
-    const user = await prismaClient.appUser.findUnique({
-      where: { id: actorId },
-      include: { branch: { select: { code: true } } }
-    });
-    return user?.branch?.code ?? "";
+    return this.repo.getBranchCodeByUserId(actorId);
   }
 }
 

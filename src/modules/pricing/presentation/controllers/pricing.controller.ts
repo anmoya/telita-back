@@ -1,28 +1,27 @@
 import { BadRequestException, Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, Query, UnprocessableEntityException } from "@nestjs/common";
-import { createQuoteUseCase, createQuoteBatchUseCase } from "../../infrastructure/factories/create-quote-use-case.factory";
-import type { QuoteBatchItem } from "../../application/use-cases/calculate-quote-batch.use-case";
-import { prismaClient } from "../../../../shared/infrastructure/persistence/prisma-client";
-import { PrismaPriceRepository } from "../../infrastructure/persistence/prisma/prisma-price.repository";
 import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
-
-type CreateQuoteBody = {
-  branchCode: string;
-  skuCode: string;
-  priceListName: string;
-  requestedWidthM: number;
-  requestedHeightM: number;
-  quantity: number;
-};
+import { SystemClockService } from "../../../../shared/infrastructure/time/system-clock.service";
+import { CalculateQuoteBatchUseCase } from "../../application/use-cases/calculate-quote-batch.use-case";
+import { CalculateQuoteUseCase } from "../../application/use-cases/calculate-quote.use-case";
+import { PrismaPriceRepository } from "../../infrastructure/persistence/prisma/prisma-price.repository";
+import { CreateQuoteDto, PreviewRequestDto, QuoteBatchRequestDto } from "../dto/pricing.dto";
 
 @Controller("pricing")
 export class PricingController {
-  private readonly quoteUseCase = createQuoteUseCase();
-  private readonly quoteBatchUseCase = createQuoteBatchUseCase();
-  private readonly priceRepo = new PrismaPriceRepository(prismaClient);
+  private readonly quoteUseCase: CalculateQuoteUseCase;
+  private readonly quoteBatchUseCase: CalculateQuoteBatchUseCase;
+
+  constructor(
+    private readonly priceRepo: PrismaPriceRepository,
+    private readonly clock: SystemClockService
+  ) {
+    this.quoteUseCase = new CalculateQuoteUseCase(clock, priceRepo);
+    this.quoteBatchUseCase = new CalculateQuoteBatchUseCase(clock, priceRepo);
+  }
 
   @Post("quote")
   @HttpCode(HttpStatus.OK)
-  async quote(@Body() body: CreateQuoteBody, @Headers("authorization") authorization?: string) {
+  async quote(@Body() body: CreateQuoteDto, @Headers("authorization") authorization?: string) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     try {
@@ -39,7 +38,7 @@ export class PricingController {
   @Post("quote-batch")
   @HttpCode(HttpStatus.OK)
   async quoteBatch(
-    @Body() body: { branchCode: string; priceListName: string; items: QuoteBatchItem[] },
+    @Body() body: QuoteBatchRequestDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -64,21 +63,7 @@ export class PricingController {
   @Post("preview")
   @HttpCode(HttpStatus.OK)
   async preview(
-    @Body() body: {
-      mode: "CUSTOMER" | "INTERNAL";
-      branchCode: string;
-      priceListName: string;
-      customerName?: string;
-      customerReference?: string;
-      items: Array<{
-        skuCode: string;
-        requestedWidthM: number;
-        requestedHeightM: number;
-        quantity: number;
-        description?: string;
-        categoryName?: string;
-      }>;
-    },
+    @Body() body: PreviewRequestDto,
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -101,7 +86,7 @@ export class PricingController {
     try {
       const batch = await this.quoteBatchUseCase.execute(batchInput);
 
-      const branch = await prismaClient.branch.findFirst({ where: { code: body.branchCode } });
+      const branch = await this.priceRepo.getBranchSummaryByCode(body.branchCode);
 
       const lines = body.items.map((it, idx) => {
         const line = batch.lines[idx];

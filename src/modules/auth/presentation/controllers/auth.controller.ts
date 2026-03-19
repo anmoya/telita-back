@@ -2,15 +2,18 @@ import { BadRequestException, Body, Controller, Post } from "@nestjs/common";
 import { PrismaAuthRepository } from "../../infrastructure/prisma-auth.repository";
 import { TokenService } from "../../../../shared/infrastructure/auth/token.service";
 import { BcryptPasswordHasher } from "../../../../shared/infrastructure/auth/bcrypt-password-hasher";
+import { LoginDto } from "../dto/login.dto";
 
 @Controller("auth")
 export class AuthController {
-  private readonly repo = new PrismaAuthRepository();
-  private readonly tokenService = new TokenService(process.env.AUTH_SECRET ?? "telita_dev_secret");
-  private readonly hasher = new BcryptPasswordHasher();
+  constructor(
+    private readonly repo: PrismaAuthRepository,
+    private readonly tokenService: TokenService,
+    private readonly hasher: BcryptPasswordHasher
+  ) {}
 
   @Post("login")
-  async login(@Body() body: { email: string; password: string }) {
+  async login(@Body() body: LoginDto) {
     const user = await this.repo.findActiveUserByEmail(body.email);
     if (!user) throw new BadRequestException("Invalid credentials.");
 

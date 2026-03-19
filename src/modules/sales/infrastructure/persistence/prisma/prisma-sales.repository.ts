@@ -1,8 +1,10 @@
-import { AuditAction, CutJobStatus, DiscountSource, PriceMethod, SaleStatus, ScrapStatus } from "@prisma/client";
+import { Injectable } from "@nestjs/common";
+import { AuditAction, CutJobStatus, DiscountSource, PriceMethod, SaleStatus, ScrapStatus, SoftHoldStatus } from "@prisma/client";
 import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 import { PrismaQuoteItemCategoriesRepository } from "../../../../quote-item-categories/infrastructure/persistence/prisma/prisma-quote-item-categories.repository";
 
+@Injectable()
 export class PrismaSalesRepository {
   private readonly auditRepo = new PrismaAuditRepository();
   private readonly categoriesRepo = new PrismaQuoteItemCategoriesRepository();
@@ -96,75 +98,42 @@ export class PrismaSalesRepository {
     const sale = await prismaClient.sale.findUnique({ where: { id: saleId } });
     if (!sale) throw new Error("Venta no encontrada.");
     if (sale.status !== SaleStatus.DRAFT) throw new Error("Solo se pueden agregar líneas a ventas en estado DRAFT.");
-
-    const sku = await prismaClient.fabricSku.findFirst({
-      where: { branchId: sale.branchId, code: input.skuCode, isActive: true }
-    });
-    if (!sku) throw new Error("SKU no encontrado.");
-
-    const skuWidthM = Number(sku.widthValue);
-    if (input.requestedWidthM > skuWidthM) throw new Error("El ancho solicitado supera el ancho del SKU.");
-
-    const priceItem = await prismaClient.priceListItem.findFirst({
-      where: { priceListId: sale.priceListId, skuId: sku.id }
-    });
-    if (!priceItem) throw new Error("Precio no encontrado para el SKU.");
-
-    const cell = await prismaClient.priceListCell.findFirst({
-      where: {
-        priceListId: sale.priceListId,
-        skuId: sku.id,
-        maxWidthM: { gte: input.requestedWidthM },
-        maxHeightM: { gte: input.requestedHeightM }
-      },
-      orderBy: [{ maxWidthM: "asc" }, { maxHeightM: "asc" }]
-    });
-    const priceMethod = cell ? PriceMethod.TABLE_LOOKUP : PriceMethod.LINEAR_METER;
-    const unitPrice = cell ? Number(cell.unitPrice) : Number(priceItem.basePrice);
-    const amounts = computeLineAmounts({
-      priceMethod,
+    const lineData = await this.resolveLineData(sale, {
+      skuCode: input.skuCode,
+      requestedWidthM: input.requestedWidthM,
       requestedHeightM: input.requestedHeightM,
       quantity: input.quantity,
-      unitPrice,
-      discountPct: Number(sale.discountPctApplied)
+      roomAreaName: input.roomAreaName ?? input.categoryName ?? null,
+      categoryId: input.categoryId ?? null,
+      categoryName: input.categoryName ?? null,
+      displayOrder: input.displayOrder ?? 0,
+      lineNote: input.lineNote ?? null,
+      actorEmail: input.createdByEmail
     });
-
-    // Resolve category: prefer explicit categoryId, fallback to categoryName (create if needed)
-    let resolvedCategoryId: string | null = null;
-    if (input.categoryId) {
-      resolvedCategoryId = input.categoryId;
-    } else if (input.categoryName && input.createdByEmail) {
-      const category = await this.categoriesRepo.findOrCreate({
-        branchId: sale.branchId,
-        name: input.categoryName,
-        createdByEmail: input.createdByEmail
-      });
-      resolvedCategoryId = category.id;
-    }
 
     const line = await prismaClient.saleLine.create({
       data: {
         saleId: sale.id,
-        skuId: sku.id,
-        categoryId: resolvedCategoryId,
-        displayOrder: input.displayOrder ?? 0,
-        lineNote: input.lineNote ?? null,
-        roomAreaName: input.roomAreaName ?? input.categoryName ?? null,
-        requestedWidthM: input.requestedWidthM,
-        requestedHeightM: input.requestedHeightM,
-        quantity: input.quantity,
-        priceMethod,
-        unitPrice,
-        discountPct: Number(sale.discountPctApplied),
-        lineSubtotal: amounts.lineSubtotal,
-        lineTotal: amounts.lineTotal
+        skuId: lineData.skuId,
+        categoryId: lineData.categoryId,
+        displayOrder: lineData.displayOrder,
+        lineNote: lineData.lineNote,
+        roomAreaName: lineData.roomAreaName,
+        requestedWidthM: lineData.requestedWidthM,
+        requestedHeightM: lineData.requestedHeightM,
+        quantity: lineData.quantity,
+        priceMethod: lineData.priceMethod,
+        unitPrice: lineData.unitPrice,
+        discountPct: lineData.discountPct,
+        lineSubtotal: lineData.lineSubtotal,
+        lineTotal: lineData.lineTotal
       }
     });
     await this.createSaleLinePieces(line.id, {
-      quantity: input.quantity,
-      requestedWidthM: input.requestedWidthM,
-      requestedHeightM: input.requestedHeightM,
-      roomAreaName: input.roomAreaName ?? input.categoryName ?? null
+      quantity: lineData.quantity,
+      requestedWidthM: lineData.requestedWidthM,
+      requestedHeightM: lineData.requestedHeightM,
+      roomAreaName: lineData.roomAreaName
     });
     await this.auditRepo.log({
       branchId: sale.branchId,
@@ -174,16 +143,141 @@ export class PrismaSalesRepository {
       action: AuditAction.CREATE,
       afterJson: {
         saleId: sale.id,
-        skuId: sku.id,
-        quantity: input.quantity,
-        lineTotal: amounts.lineTotal,
-        categoryId: resolvedCategoryId,
-        displayOrder: input.displayOrder ?? 0,
-        roomAreaName: input.roomAreaName ?? input.categoryName ?? null
+        skuId: lineData.skuId,
+        quantity: lineData.quantity,
+        lineTotal: lineData.lineTotal,
+        categoryId: lineData.categoryId,
+        displayOrder: lineData.displayOrder,
+        roomAreaName: lineData.roomAreaName
       }
     });
 
     await this.recomputeTotals(sale.id);
+  }
+
+  async updateLine(
+    saleId: string,
+    saleLineId: string,
+    updatedByEmail: string,
+    input: {
+      skuCode: string;
+      requestedWidthM: number;
+      requestedHeightM: number;
+      quantity: number;
+      roomAreaName?: string | null;
+      categoryId?: string | null;
+      categoryName?: string | null;
+      displayOrder?: number;
+      lineNote?: string | null;
+    }
+  ) {
+    const { sale, line } = await this.getEditableDraftLine(saleId, saleLineId);
+    const user = await prismaClient.appUser.findUnique({ where: { email: updatedByEmail } });
+    if (!user) throw new Error("Usuario no encontrado.");
+
+    const lineData = await this.resolveLineData(sale, {
+      skuCode: input.skuCode,
+      requestedWidthM: input.requestedWidthM,
+      requestedHeightM: input.requestedHeightM,
+      quantity: input.quantity,
+      roomAreaName: input.roomAreaName ?? null,
+      categoryId: input.categoryId ?? null,
+      categoryName: input.categoryName ?? null,
+      displayOrder: input.displayOrder ?? line.displayOrder,
+      lineNote: input.lineNote ?? null,
+      actorEmail: updatedByEmail
+    });
+
+    await prismaClient.$transaction(async (tx) => {
+      await tx.saleLine.update({
+        where: { id: line.id },
+        data: {
+          skuId: lineData.skuId,
+          categoryId: lineData.categoryId,
+          displayOrder: lineData.displayOrder,
+          lineNote: lineData.lineNote,
+          roomAreaName: lineData.roomAreaName,
+          requestedWidthM: lineData.requestedWidthM,
+          requestedHeightM: lineData.requestedHeightM,
+          quantity: lineData.quantity,
+          priceMethod: lineData.priceMethod,
+          unitPrice: lineData.unitPrice,
+          discountPct: lineData.discountPct,
+          lineSubtotal: lineData.lineSubtotal,
+          lineTotal: lineData.lineTotal
+        }
+      });
+      await tx.saleLinePiece.deleteMany({ where: { saleLineId: line.id } });
+      await createSaleLinePiecesTx(tx, line.id, {
+        quantity: lineData.quantity,
+        requestedWidthM: lineData.requestedWidthM,
+        requestedHeightM: lineData.requestedHeightM,
+        roomAreaName: lineData.roomAreaName
+      });
+      await this.recomputeTotals(sale.id, tx);
+    });
+
+    await this.auditRepo.log({
+      branchId: sale.branchId,
+      actorUserId: user.id,
+      entityType: "sale_line",
+      entityId: line.id,
+      action: AuditAction.UPDATE,
+      beforeJson: {
+        skuId: line.skuId,
+        categoryId: line.categoryId,
+        displayOrder: line.displayOrder,
+        lineNote: line.lineNote,
+        roomAreaName: line.roomAreaName,
+        requestedWidthM: Number(line.requestedWidthM),
+        requestedHeightM: Number(line.requestedHeightM),
+        quantity: line.quantity,
+        unitPrice: Number(line.unitPrice),
+        lineTotal: Number(line.lineTotal)
+      },
+      afterJson: {
+        skuId: lineData.skuId,
+        categoryId: lineData.categoryId,
+        displayOrder: lineData.displayOrder,
+        lineNote: lineData.lineNote,
+        roomAreaName: lineData.roomAreaName,
+        requestedWidthM: lineData.requestedWidthM,
+        requestedHeightM: lineData.requestedHeightM,
+        quantity: lineData.quantity,
+        unitPrice: lineData.unitPrice,
+        lineTotal: lineData.lineTotal
+      }
+    });
+  }
+
+  async removeLine(saleId: string, saleLineId: string, removedByEmail: string) {
+    const { sale, line } = await this.getEditableDraftLine(saleId, saleLineId);
+    const user = await prismaClient.appUser.findUnique({ where: { email: removedByEmail } });
+    if (!user) throw new Error("Usuario no encontrado.");
+
+    await prismaClient.$transaction(async (tx) => {
+      await tx.saleLinePiece.deleteMany({ where: { saleLineId: line.id } });
+      await tx.saleLine.delete({ where: { id: line.id } });
+      await this.recomputeTotals(sale.id, tx);
+    });
+
+    await this.auditRepo.log({
+      branchId: sale.branchId,
+      actorUserId: user.id,
+      entityType: "sale_line",
+      entityId: line.id,
+      action: AuditAction.DELETE,
+      beforeJson: {
+        saleId: sale.id,
+        skuId: line.skuId,
+        categoryId: line.categoryId,
+        displayOrder: line.displayOrder,
+        requestedWidthM: Number(line.requestedWidthM),
+        requestedHeightM: Number(line.requestedHeightM),
+        quantity: line.quantity,
+        lineTotal: Number(line.lineTotal)
+      }
+    });
   }
 
   async updateCustomer(
@@ -306,7 +400,13 @@ export class PrismaSalesRepository {
       where: { id: saleId },
       include: {
         lines: {
-          include: { allocations: { where: { isActive: true }, select: { id: true, scrapId: true } } }
+          include: {
+            pieces: {
+              include: {
+                allocations: { where: { isActive: true }, select: { id: true, scrapId: true } }
+              }
+            }
+          }
         }
       }
     });
@@ -321,10 +421,12 @@ export class PrismaSalesRepository {
     await prismaClient.$transaction(async (tx) => {
       await tx.sale.update({ where: { id: sale.id }, data: { status: SaleStatus.CONFIRMED } });
       for (const line of sale.lines) {
-        const allocation = line.allocations[0];
-        if (allocation) {
+        const allocations = line.pieces.flatMap((piece) => piece.allocations);
+        for (const allocation of allocations) {
           await tx.scrap.update({ where: { id: allocation.scrapId }, data: { status: ScrapStatus.USED } });
-        } else {
+        }
+
+        if (allocations.length < line.pieces.length) {
           const exists = await tx.cutJob.findFirst({ where: { saleLineId: line.id } });
           if (!exists) {
             await tx.cutJob.create({ data: { saleLineId: line.id, status: "PENDING" } });
@@ -348,7 +450,13 @@ export class PrismaSalesRepository {
       where: { id: saleId },
       include: {
         lines: {
-          include: { allocations: { where: { isActive: true }, select: { id: true, scrapId: true } } }
+          include: {
+            pieces: {
+              include: {
+                allocations: { where: { isActive: true }, select: { id: true, scrapId: true } }
+              }
+            }
+          }
         }
       }
     });
@@ -364,8 +472,7 @@ export class PrismaSalesRepository {
 
     await prismaClient.$transaction(async (tx) => {
       for (const line of sale.lines) {
-        const allocation = line.allocations[0];
-        if (allocation) {
+        for (const allocation of line.pieces.flatMap((piece) => piece.allocations)) {
           const scrap = await tx.scrap.findUnique({ where: { id: allocation.scrapId } });
           if (scrap?.status === ScrapStatus.USED) {
             await tx.scrap.update({ where: { id: allocation.scrapId }, data: { status: ScrapStatus.STORED } });
@@ -618,14 +725,41 @@ export class PrismaSalesRepository {
           include: {
             sku: { select: { code: true } },
             category: { select: { name: true } },
-            allocations: { where: { isActive: true }, select: { scrapId: true } },
-            pieces: { orderBy: { pieceIndex: "asc" } }
+            pieces: {
+              include: {
+                allocations: {
+                  where: { isActive: true },
+                  include: { scrap: { include: { location: true } } }
+                }
+              },
+              orderBy: { pieceIndex: "asc" }
+            }
           },
           orderBy: { displayOrder: "asc" }
         }
       },
       orderBy: { createdAt: "desc" }
     });
+  }
+
+  async getPrintableSale(saleId: string) {
+    const sale = await prismaClient.sale.findUnique({
+      where: { id: saleId },
+      include: {
+        branch: true,
+        customer: true,
+        priceList: true,
+        lines: {
+          include: {
+            sku: true,
+            pieces: { orderBy: { pieceIndex: "asc" } }
+          },
+          orderBy: { displayOrder: "asc" }
+        }
+      }
+    });
+    if (!sale) throw new Error("Venta no encontrada.");
+    return sale;
   }
 
   async markCut(cutJobId: string, cutByEmail: string) {
@@ -666,25 +800,43 @@ export class PrismaSalesRepository {
     return cutJob;
   }
 
-  async listCutJobs(params: { saleId?: string; branchCode?: string; status?: CutJobStatus }) {
-    return prismaClient.cutJob.findMany({
-      where: {
-        status: params.status,
-        saleLine: {
-          saleId: params.saleId,
-          sale: params.branchCode ? { branch: { code: params.branchCode } } : undefined
-        }
-      },
-      include: {
-        saleLine: {
-          include: {
-            sku: { select: { code: true, name: true } },
-            sale: { select: { id: true, createdAt: true } }
+  async listCutJobs(params: { saleId?: string; branchCode?: string; status?: CutJobStatus; page?: number; limit?: number }) {
+    const limit = Math.min(params.limit ?? 8, 100);
+    const page = Math.max(params.page ?? 1, 1);
+    const skip = (page - 1) * limit;
+    const where = {
+      status: params.status,
+      saleLine: {
+        saleId: params.saleId,
+        sale: params.branchCode ? { branch: { code: params.branchCode } } : undefined
+      }
+    };
+
+    const [data, total] = await Promise.all([
+      prismaClient.cutJob.findMany({
+        where,
+        include: {
+          saleLine: {
+            include: {
+              sku: { select: { code: true, name: true } },
+              sale: { select: { id: true, createdAt: true } }
+            }
           }
-        }
-      },
-      orderBy: { createdAt: "desc" }
-    });
+        },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit
+      }),
+      prismaClient.cutJob.count({ where })
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    };
   }
 
   private async createSaleLinePieces(
@@ -692,6 +844,107 @@ export class PrismaSalesRepository {
     input: { quantity: number; requestedWidthM: number; requestedHeightM: number; roomAreaName: string | null }
   ) {
     await createSaleLinePiecesTx(prismaClient, saleLineId, input);
+  }
+
+  private async resolveLineData(
+    sale: { branchId: string; priceListId: string; discountPctApplied: number | { toString(): string } },
+    input: {
+      skuCode: string;
+      requestedWidthM: number;
+      requestedHeightM: number;
+      quantity: number;
+      roomAreaName?: string | null;
+      categoryId?: string | null;
+      categoryName?: string | null;
+      displayOrder?: number;
+      lineNote?: string | null;
+      actorEmail?: string;
+    }
+  ) {
+    const sku = await prismaClient.fabricSku.findFirst({
+      where: { branchId: sale.branchId, code: input.skuCode, isActive: true }
+    });
+    if (!sku) throw new Error("SKU no encontrado.");
+
+    const skuWidthM = Number(sku.widthValue);
+    if (input.requestedWidthM > skuWidthM) throw new Error("El ancho solicitado supera el ancho del SKU.");
+
+    const priceItem = await prismaClient.priceListItem.findFirst({
+      where: { priceListId: sale.priceListId, skuId: sku.id }
+    });
+    if (!priceItem) throw new Error("Precio no encontrado para el SKU.");
+
+    const cell = await prismaClient.priceListCell.findFirst({
+      where: {
+        priceListId: sale.priceListId,
+        skuId: sku.id,
+        maxWidthM: { gte: input.requestedWidthM },
+        maxHeightM: { gte: input.requestedHeightM }
+      },
+      orderBy: [{ maxWidthM: "asc" }, { maxHeightM: "asc" }]
+    });
+    const priceMethod = cell ? PriceMethod.TABLE_LOOKUP : PriceMethod.LINEAR_METER;
+    const unitPrice = cell ? Number(cell.unitPrice) : Number(priceItem.basePrice);
+    const discountPct = Number(sale.discountPctApplied);
+    const amounts = computeLineAmounts({
+      priceMethod,
+      requestedHeightM: input.requestedHeightM,
+      quantity: input.quantity,
+      unitPrice,
+      discountPct
+    });
+
+    let resolvedCategoryId: string | null = null;
+    if (input.categoryId) {
+      resolvedCategoryId = input.categoryId;
+    } else if (input.categoryName && input.actorEmail) {
+      const category = await this.categoriesRepo.findOrCreate({
+        branchId: sale.branchId,
+        name: input.categoryName,
+        createdByEmail: input.actorEmail
+      });
+      resolvedCategoryId = category.id;
+    }
+
+    return {
+      skuId: sku.id,
+      categoryId: resolvedCategoryId,
+      displayOrder: input.displayOrder ?? 0,
+      lineNote: input.lineNote?.trim() || null,
+      roomAreaName: input.roomAreaName?.trim() || null,
+      requestedWidthM: input.requestedWidthM,
+      requestedHeightM: input.requestedHeightM,
+      quantity: input.quantity,
+      priceMethod,
+      unitPrice,
+      discountPct,
+      lineSubtotal: amounts.lineSubtotal,
+      lineTotal: amounts.lineTotal
+    };
+  }
+
+  private async getEditableDraftLine(saleId: string, saleLineId: string) {
+    const sale = await prismaClient.sale.findUnique({ where: { id: saleId } });
+    if (!sale) throw new Error("Venta no encontrada.");
+    if (sale.status !== SaleStatus.DRAFT) throw new Error("Solo se pueden editar líneas de ventas en estado DRAFT.");
+
+    const line = await prismaClient.saleLine.findFirst({ where: { id: saleLineId, saleId } });
+    if (!line) throw new Error("Línea de venta no encontrada.");
+
+    const activeAllocation = await prismaClient.saleLineScrapAllocation.findFirst({
+      where: { saleLineId: line.id, isActive: true }
+    });
+    if (activeAllocation) throw new Error("No se puede editar esta línea porque tiene un retazo asignado.");
+
+    const cutJob = await prismaClient.cutJob.findFirst({ where: { saleLineId: line.id } });
+    if (cutJob) throw new Error("No se puede editar esta línea porque ya tiene trabajo de corte asociado.");
+
+    const activeSoftHold = await prismaClient.scrapSoftHold.findFirst({
+      where: { saleLineId: line.id, status: SoftHoldStatus.ACTIVE, releasedAt: null, convertedAt: null }
+    });
+    if (activeSoftHold) throw new Error("No se puede editar esta línea porque tiene una reserva temporal activa.");
+
+    return { sale, line };
   }
 
   private async refreshLineDiscounts(tx: MinimalSalesTx, saleId: string, discountPct: number) {

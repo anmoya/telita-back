@@ -13,64 +13,104 @@ import {
   Put,
   Query
 } from "@nestjs/common";
-import { createPriceListUseCase } from "../../infrastructure/factories/create-price-list-use-case.factory";
 import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
+import { AddPriceListItemUseCase } from "../../application/use-cases/add-price-list-item.use-case";
+import { CreatePriceListUseCase } from "../../application/use-cases/create-price-list.use-case";
+import { DeletePriceListItemUseCase } from "../../application/use-cases/delete-price-list-item.use-case";
+import { GetPriceListItemsUseCase } from "../../application/use-cases/get-price-list-items.use-case";
+import { GetPriceListsUseCase } from "../../application/use-cases/get-price-lists.use-case";
+import { TogglePriceListStatusUseCase } from "../../application/use-cases/toggle-price-list-status.use-case";
+import { UpdatePriceListItemUseCase } from "../../application/use-cases/update-price-list-item.use-case";
+import { UpdatePriceListUseCase } from "../../application/use-cases/update-price-list.use-case";
+import { PrismaPriceListItemRepository } from "../../infrastructure/persistence/prisma/prisma-price-list-item.repository";
+import { PrismaPriceListRepository } from "../../infrastructure/persistence/prisma/prisma-price-list.repository";
+import { PrismaPriceRepository } from "../../infrastructure/persistence/prisma/prisma-price.repository";
+import {
+  AddPriceListItemDto,
+  CreatePriceListCellDto,
+  CreatePriceListDto,
+  UpdatePriceListCellDto,
+  UpdatePriceListDto,
+  UpdatePriceListItemDto
+} from "../dto/price-lists.dto";
 
 @Controller("price-lists")
 export class PriceListsController {
-  private readonly factory = createPriceListUseCase();
+  private readonly getPriceListsUseCase: GetPriceListsUseCase;
+  private readonly createPriceListUseCase: CreatePriceListUseCase;
+  private readonly updatePriceListUseCase: UpdatePriceListUseCase;
+  private readonly togglePriceListStatusUseCase: TogglePriceListStatusUseCase;
+  private readonly getPriceListItemsUseCase: GetPriceListItemsUseCase;
+  private readonly addPriceListItemUseCase: AddPriceListItemUseCase;
+  private readonly updatePriceListItemUseCase: UpdatePriceListItemUseCase;
+  private readonly deletePriceListItemUseCase: DeletePriceListItemUseCase;
+
+  constructor(
+    private readonly priceListRepo: PrismaPriceListRepository,
+    private readonly itemRepo: PrismaPriceListItemRepository,
+    private readonly priceRepo: PrismaPriceRepository
+  ) {
+    this.getPriceListsUseCase = new GetPriceListsUseCase(priceListRepo);
+    this.createPriceListUseCase = new CreatePriceListUseCase(priceListRepo);
+    this.updatePriceListUseCase = new UpdatePriceListUseCase(priceListRepo);
+    this.togglePriceListStatusUseCase = new TogglePriceListStatusUseCase(priceListRepo);
+    this.getPriceListItemsUseCase = new GetPriceListItemsUseCase(itemRepo);
+    this.addPriceListItemUseCase = new AddPriceListItemUseCase(itemRepo);
+    this.updatePriceListItemUseCase = new UpdatePriceListItemUseCase(itemRepo);
+    this.deletePriceListItemUseCase = new DeletePriceListItemUseCase(itemRepo);
+  }
 
   @Get()
   async list(@Query("branchCode") branchCode = "MAIN", @Headers("authorization") authorization?: string) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    return this.factory.getPriceListsUseCase.execute(branchCode);
+    return this.getPriceListsUseCase.execute(branchCode);
   }
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  async create(@Body() body: CreatePriceListBody, @Headers("authorization") authorization: string) {
+  async create(@Body() body: CreatePriceListDto, @Headers("authorization") authorization: string) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin"]);
-    return this.factory.createPriceListUseCase.execute(body);
+    return this.createPriceListUseCase.execute(body);
   }
 
   @Put(":id")
-  async update(@Param("id") id: string, @Body() body: UpdatePriceListBody, @Headers("authorization") authorization: string) {
+  async update(@Param("id") id: string, @Body() body: UpdatePriceListDto, @Headers("authorization") authorization: string) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin"]);
-    return this.factory.updatePriceListUseCase.execute({ id, ...body });
+    return this.updatePriceListUseCase.execute({ id, ...body });
   }
 
   @Patch(":id/status")
   async toggleStatus(@Param("id") id: string, @Headers("authorization") authorization: string) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin"]);
-    return this.factory.togglePriceListStatusUseCase.execute(id);
+    return this.togglePriceListStatusUseCase.execute(id);
   }
 
   @Get(":id/items")
   async listItems(@Param("id") id: string, @Headers("authorization") authorization?: string) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    return this.factory.getPriceListItemsUseCase.execute(id);
+    return this.getPriceListItemsUseCase.execute(id);
   }
 
   @Post(":id/items")
   @HttpCode(HttpStatus.CREATED)
   async addItem(
     @Param("id") priceListId: string,
-    @Body() body: AddPriceListItemBody,
+    @Body() body: AddPriceListItemDto,
     @Headers("authorization") authorization: string
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin"]);
     try {
-      return this.factory.addPriceListItemUseCase.execute({ priceListId, ...body });
+      return this.addPriceListItemUseCase.execute({ priceListId, ...body });
     } catch (error) {
       // SPEC-30: Handle duplicate SKU with 409 Conflict
       const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("SKU already exists in this price list")) {
+      if (message.includes("SKU already exists in this price list") || message.includes("SKU ya existe en esta lista de precios")) {
         throw new ConflictException(message);
       }
       throw error;
@@ -81,12 +121,12 @@ export class PriceListsController {
   async updateItem(
     @Param("id") _priceListId: string,
     @Param("itemId") itemId: string,
-    @Body() body: UpdatePriceListItemBody,
+    @Body() body: UpdatePriceListItemDto,
     @Headers("authorization") authorization: string
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin"]);
-    return this.factory.updatePriceListItemUseCase.execute({ id: itemId, ...body });
+    return this.updatePriceListItemUseCase.execute({ id: itemId, ...body });
   }
 
   @Delete(":id/items/:itemId")
@@ -98,7 +138,7 @@ export class PriceListsController {
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin"]);
-    await this.factory.deletePriceListItemUseCase.execute(itemId);
+    await this.deletePriceListItemUseCase.execute(itemId);
   }
 
   // SPEC-31: Price list cell endpoints
@@ -110,45 +150,21 @@ export class PriceListsController {
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const { prismaClient } = await import("../../../../shared/infrastructure/persistence/prisma-client");
-    const { PrismaPriceRepository } = await import("../../infrastructure/persistence/prisma/prisma-price.repository");
-    const priceRepo = new PrismaPriceRepository(prismaClient);
-    return priceRepo.listCells(priceListId, skuId);
+    return this.priceRepo.listCells(priceListId, skuId);
   }
 
   @Post(":id/cells")
   @HttpCode(HttpStatus.CREATED)
   async createCell(
     @Param("id") priceListId: string,
-    @Body() body: CreatePriceListCellBody,
+    @Body() body: CreatePriceListCellDto,
     @Headers("authorization") authorization: string
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin"]);
-
-    // Resolve skuCode to skuId
-    const { prismaClient } = await import("../../../../shared/infrastructure/persistence/prisma-client");
-    const priceList = await prismaClient.priceList.findUnique({
-      where: { id: priceListId },
-      select: { branchId: true }
-    });
-    if (!priceList) {
-      throw new Error("Price list not found");
-    }
-
-    const sku = await prismaClient.fabricSku.findFirst({
-      where: { branchId: priceList.branchId, code: body.skuCode, isActive: true },
-      select: { id: true }
-    });
-    if (!sku) {
-      throw new Error("SKU not found");
-    }
-
-    const { PrismaPriceRepository } = await import("../../infrastructure/persistence/prisma/prisma-price.repository");
-    const priceRepo = new PrismaPriceRepository(prismaClient);
-    return priceRepo.createCell({
+    return this.priceRepo.createCellBySkuCode({
       priceListId,
-      skuId: sku.id,
+      skuCode: body.skuCode,
       maxWidthM: body.maxWidthM,
       maxHeightM: body.maxHeightM,
       unitPrice: body.unitPrice
@@ -159,15 +175,12 @@ export class PriceListsController {
   async updateCell(
     @Param("id") _priceListId: string,
     @Param("cellId") cellId: string,
-    @Body() body: UpdatePriceListCellBody,
+    @Body() body: UpdatePriceListCellDto,
     @Headers("authorization") authorization: string
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin"]);
-    const { prismaClient } = await import("../../../../shared/infrastructure/persistence/prisma-client");
-    const { PrismaPriceRepository } = await import("../../infrastructure/persistence/prisma/prisma-price.repository");
-    const priceRepo = new PrismaPriceRepository(prismaClient);
-    return priceRepo.updateCell(cellId, body);
+    return this.priceRepo.updateCell(cellId, body);
   }
 
   @Delete(":id/cells/:cellId")
@@ -179,47 +192,6 @@ export class PriceListsController {
   ) {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin"]);
-    const { prismaClient } = await import("../../../../shared/infrastructure/persistence/prisma-client");
-    const { PrismaPriceRepository } = await import("../../infrastructure/persistence/prisma/prisma-price.repository");
-    const priceRepo = new PrismaPriceRepository(prismaClient);
-    await priceRepo.deleteCell(cellId);
+    await this.priceRepo.deleteCell(cellId);
   }
 }
-
-type CreatePriceListBody = {
-  branchCode: string;
-  name: string;
-  currencyCode: string;
-  validFrom: string;
-  validTo?: string | null;
-};
-
-type UpdatePriceListBody = {
-  name?: string;
-  validFrom?: string;
-  validTo?: string | null;
-};
-
-type AddPriceListItemBody = {
-  skuCode: string;
-  basePrice: number;
-  discountPct: number;
-};
-
-type UpdatePriceListItemBody = {
-  basePrice?: number;
-  discountPct?: number;
-};
-
-type CreatePriceListCellBody = {
-  skuCode: string;
-  maxWidthM: number;
-  maxHeightM: number;
-  unitPrice: number;
-};
-
-type UpdatePriceListCellBody = {
-  maxWidthM?: number;
-  maxHeightM?: number;
-  unitPrice?: number;
-};

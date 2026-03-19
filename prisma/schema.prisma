@@ -505,6 +505,7 @@ model SaleLinePiece {
   saleLine SaleLine @relation(fields: [saleLineId], references: [id], onDelete: Cascade)
   labels   Label[]
   scraps   Scrap[]
+  allocations SaleLineScrapAllocation[]
 
   @@unique([saleLineId, pieceIndex])
   @@index([saleLineId])
@@ -625,6 +626,7 @@ model LabelPrintEvent {
 model SaleLineScrapAllocation {
   id          String    @id @default(uuid()) @db.Uuid
   saleLineId  String    @map("sale_line_id") @db.Uuid
+  saleLinePieceId String @map("sale_line_piece_id") @db.Uuid
   scrapId     String    @map("scrap_id") @db.Uuid
   allocatedBy String    @map("allocated_by") @db.Uuid
   allocatedAt DateTime  @map("allocated_at") @db.Timestamptz(6)
@@ -632,11 +634,13 @@ model SaleLineScrapAllocation {
   isActive    Boolean   @default(true) @map("is_active")
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
 
-  saleLine        SaleLine  @relation(fields: [saleLineId], references: [id])
-  scrap           Scrap     @relation(fields: [scrapId], references: [id])
-  allocatedByUser AppUser   @relation("AllocationAllocatedBy", fields: [allocatedBy], references: [id])
+  saleLine        SaleLine      @relation(fields: [saleLineId], references: [id])
+  saleLinePiece   SaleLinePiece @relation(fields: [saleLinePieceId], references: [id])
+  scrap           Scrap         @relation(fields: [scrapId], references: [id])
+  allocatedByUser AppUser       @relation("AllocationAllocatedBy", fields: [allocatedBy], references: [id])
 
   @@index([saleLineId])
+  @@index([saleLinePieceId])
   @@index([scrapId])
   @@map("sale_line_scrap_allocation")
 }

@@ -1,3 +1,4 @@
+import { Injectable } from "@nestjs/common";
 import { AuditAction } from "@prisma/client";
 import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
@@ -58,6 +59,7 @@ export type FlowRules = {
 
 const DEFAULT_FLOW_RULES: FlowRules = { scrapRequiredAtStage: "AT_CUT" };
 
+@Injectable()
 export class PrismaSettingsRepository {
   private readonly auditRepo = new PrismaAuditRepository();
 

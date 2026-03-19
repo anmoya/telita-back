@@ -1,22 +1,15 @@
 import { Injectable } from "@nestjs/common";
 import { PrismaClient, StatusLabel } from "@prisma/client";
+import {
+  GroupedStatusLabels,
+  StatusLabelDTO,
+  StatusLabelsRepositoryPort
+} from "../../../application/ports/status-labels.repository.port";
 
 const prisma = new PrismaClient();
 
-export interface StatusLabelDTO {
-  code: string;
-  label: string;
-  description: string;
-}
-
-export interface GroupedStatusLabels {
-  sale: StatusLabelDTO[];
-  cut_job: StatusLabelDTO[];
-  scrap: StatusLabelDTO[];
-}
-
 @Injectable()
-export class PrismaStatusLabelRepository {
+export class PrismaStatusLabelRepository implements StatusLabelsRepositoryPort {
   async getAllGrouped(): Promise<GroupedStatusLabels> {
     const labels = await prisma.statusLabel.findMany({
       orderBy: [{ entityType: "asc" }, { statusCode: "asc" }]

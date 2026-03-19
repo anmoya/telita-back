@@ -1,4 +1,4 @@
-import { AuditAction, PriceMethod, QuoteBatchStatus } from "@prisma/client";
+import { AuditAction, PriceMethod, Prisma, QuoteBatchStatus } from "@prisma/client";
 import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 import { PrismaQuoteItemCategoriesRepository } from "../../../../quote-item-categories/infrastructure/persistence/prisma/prisma-quote-item-categories.repository";
@@ -87,26 +87,47 @@ export class PrismaQuoteBatchesRepository {
     return batch;
   }
 
-  async list(branchCode: string, filters?: { status?: QuoteBatchStatus; customerName?: string }) {
-    return prismaClient.quoteBatch.findMany({
-      where: {
-        branch: { code: branchCode },
-        status: filters?.status,
-        customerName: filters?.customerName ? { contains: filters.customerName, mode: "insensitive" } : undefined
-      },
-      include: {
-        createdByUser: { select: { email: true, fullName: true } },
-        priceList: { select: { name: true, currencyCode: true } },
-        lines: {
-          include: {
-            sku: { select: { code: true, name: true } },
-            category: { select: { name: true } }
-          },
-          orderBy: { displayOrder: "asc" }
-        }
-      },
-      orderBy: { createdAt: "desc" }
-    });
+  async list(
+    branchCode: string,
+    filters?: { status?: QuoteBatchStatus; customerName?: string; page?: number; limit?: number }
+  ) {
+    const limit = Math.min(filters?.limit ?? 8, 100);
+    const page = Math.max(filters?.page ?? 1, 1);
+    const skip = (page - 1) * limit;
+    const where: Prisma.QuoteBatchWhereInput = {
+      branch: { code: branchCode },
+      status: filters?.status,
+      customerName: filters?.customerName ? { contains: filters.customerName, mode: Prisma.QueryMode.insensitive } : undefined
+    };
+
+    const [data, total] = await Promise.all([
+      prismaClient.quoteBatch.findMany({
+        where,
+        include: {
+          createdByUser: { select: { email: true, fullName: true } },
+          priceList: { select: { name: true, currencyCode: true } },
+          lines: {
+            include: {
+              sku: { select: { code: true, name: true } },
+              category: { select: { name: true } }
+            },
+            orderBy: { displayOrder: "asc" }
+          }
+        },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limit
+      }),
+      prismaClient.quoteBatch.count({ where })
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit)
+    };
   }
 
   async findById(id: string) {
