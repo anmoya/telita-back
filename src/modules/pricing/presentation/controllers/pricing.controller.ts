@@ -97,6 +97,7 @@ export class PricingController {
           skuCode: it.skuCode,
           description: it.description ?? it.skuCode,
           categoryName: it.categoryName ?? null,
+          roomAreaName: it.roomAreaName ?? null,
           requestedWidthM: it.requestedWidthM,
           requestedHeightM: it.requestedHeightM,
           quantity: it.quantity,

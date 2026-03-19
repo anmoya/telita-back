@@ -52,6 +52,10 @@ export class QuoteBatchItemDto {
   @IsOptional()
   @IsString()
   description?: string;
+
+  @IsOptional()
+  @IsString()
+  roomAreaName?: string;
 }
 
 export class QuoteBatchRequestDto {
@@ -94,6 +98,10 @@ export class PreviewItemDto {
   @IsOptional()
   @IsString()
   categoryName?: string;
+
+  @IsOptional()
+  @IsString()
+  roomAreaName?: string;
 }
 
 export class PreviewRequestDto {
