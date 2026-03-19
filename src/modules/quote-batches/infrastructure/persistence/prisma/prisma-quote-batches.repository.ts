@@ -27,6 +27,7 @@ export class PrismaQuoteBatchesRepository {
     priceListName: string;
     customerName?: string;
     customerReference?: string;
+    amountPaid?: number;
     lines: LineInput[];
   }) {
     const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
@@ -41,6 +42,9 @@ export class PrismaQuoteBatchesRepository {
     const resolvedLines = await this.resolveLines(input.lines, branch.id, user.email);
     const { subtotal, tax, total } = computeTotals(resolvedLines.map(l => l.lineSubtotal));
 
+    const amountPaid = Math.max(input.amountPaid ?? 0, 0);
+    if (amountPaid > total) throw new Error("El abono no puede superar el total.");
+
     const batch = await prismaClient.$transaction(async (tx) => {
       const newBatch = await tx.quoteBatch.create({
         data: {
@@ -52,6 +56,7 @@ export class PrismaQuoteBatchesRepository {
           subtotalAmount: subtotal,
           taxAmount: tax,
           totalAmount: total,
+          amountPaid,
           status: QuoteBatchStatus.DRAFT
         }
       });
@@ -169,6 +174,7 @@ export class PrismaQuoteBatchesRepository {
   async update(id: string, updatedByEmail: string, input: {
     customerName?: string;
     customerReference?: string;
+    amountPaid?: number;
     lines?: LineInput[];
   }) {
     const batch = await prismaClient.quoteBatch.findUnique({ where: { id } });
@@ -181,6 +187,7 @@ export class PrismaQuoteBatchesRepository {
     const updateData: Record<string, unknown> = {};
     if (input.customerName !== undefined) updateData.customerName = input.customerName;
     if (input.customerReference !== undefined) updateData.customerReference = input.customerReference;
+    if (input.amountPaid !== undefined) updateData.amountPaid = Math.max(input.amountPaid, 0);
 
     if (input.lines) {
       const resolvedLines = await this.resolveLines(input.lines, batch.branchId, updatedByEmail);
@@ -242,6 +249,7 @@ export class PrismaQuoteBatchesRepository {
           subtotalAmount: original.subtotalAmount,
           taxAmount: original.taxAmount,
           totalAmount: original.totalAmount,
+          amountPaid: original.amountPaid,
           status: QuoteBatchStatus.DRAFT
         }
       });

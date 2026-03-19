@@ -43,6 +43,7 @@ export class QuoteBatchesController {
       priceListName: string;
       customerName?: string;
       customerReference?: string;
+      amountPaid?: number;
       lines: LineInput[];
     },
     @Headers("authorization") authorization?: string
@@ -107,6 +108,7 @@ export class QuoteBatchesController {
     @Body() body: {
       customerName?: string;
       customerReference?: string;
+      amountPaid?: number;
       lines?: LineInput[];
     },
     @Headers("authorization") authorization?: string
@@ -159,6 +161,10 @@ type BatchListResult = Awaited<ReturnType<PrismaQuoteBatchesRepository["list"]>>
 type BatchListRow = BatchListResult["data"][number];
 
 function serializeBatch(b: NonNullable<BatchRow> | BatchListRow) {
+  const totalAmount = Number(b.totalAmount);
+  const amountPaid = Number(b.amountPaid);
+  const balanceDue = Math.max(totalAmount - amountPaid, 0);
+  const amountPaidPct = totalAmount > 0 ? Number(((amountPaid / totalAmount) * 100).toFixed(1)) : 0;
   return {
     id: b.id,
     status: b.status,
@@ -167,7 +173,10 @@ function serializeBatch(b: NonNullable<BatchRow> | BatchListRow) {
     customerReference: b.customerReference,
     subtotalAmount: Number(b.subtotalAmount),
     taxAmount: Number(b.taxAmount),
-    totalAmount: Number(b.totalAmount),
+    totalAmount,
+    amountPaid,
+    balanceDue,
+    amountPaidPct,
     createdAt: b.createdAt.toISOString(),
     createdBy: b.createdByUser.fullName,
     lines: b.lines.map((l, i) => ({

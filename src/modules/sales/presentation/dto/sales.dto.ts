@@ -73,6 +73,12 @@ export class CreateSaleFromQuoteDto {
   @IsString()
   manualDiscountReason?: string;
 
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  amountPaid?: number;
+
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })

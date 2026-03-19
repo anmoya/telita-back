@@ -506,6 +506,7 @@ export class PrismaSalesRepository {
     customerReference?: string;
     manualDiscountPct?: number;
     manualDiscountReason?: string;
+    amountPaid?: number;
     items: Array<{
       skuCode: string;
       requestedWidthM: number;
@@ -646,6 +647,9 @@ export class PrismaSalesRepository {
       });
       const quoteNumber = (lastSale?.quoteNumber ?? 0) + 1;
 
+      const saleAmountPaid = Math.max(input.amountPaid ?? 0, 0);
+      const saleBalanceDue = Math.max(totalAmount - saleAmountPaid, 0);
+
       const newSale = await tx.sale.create({
         data: {
           branchId: branch.id,
@@ -664,7 +668,9 @@ export class PrismaSalesRepository {
           discountPctApplied: discount.pct,
           subtotalAmount,
           taxAmount,
-          totalAmount
+          totalAmount,
+          amountPaid: saleAmountPaid,
+          balanceDue: saleBalanceDue
         }
       });
 
