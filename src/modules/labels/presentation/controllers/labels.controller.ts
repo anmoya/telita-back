@@ -97,6 +97,7 @@ export class LabelsController {
         saleLineId: label.saleLineId,
         scrapId: label.scrapId,
         quoteId: label.quoteId,
+        quoteCode: (label as any).saleLine?.sale?.quoteNumber ? `COT-${(label as any).saleLine.sale.quoteNumber}` : null,
         createdAt: label.createdAt.toISOString(),
         lastPrintedAt: label.printEvents[0]?.printedAt.toISOString() ?? null
       })),

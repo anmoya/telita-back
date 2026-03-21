@@ -79,6 +79,19 @@ export class CreateSaleFromQuoteDto {
   @Min(0)
   amountPaid?: number;
 
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  commercialAdjustmentPct?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  installationAmount?: number;
+
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })

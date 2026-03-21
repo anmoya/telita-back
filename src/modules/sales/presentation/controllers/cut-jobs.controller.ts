@@ -18,6 +18,7 @@ export class CutJobsController {
   @Get()
   async list(
     @Query("saleId") saleId?: string,
+    @Query("search") search?: string,
     @Query("branchCode") branchCode = "MAIN",
     @Query("status") status?: string,
     @Query("page") page?: string,
@@ -29,6 +30,7 @@ export class CutJobsController {
     const parsedStatus = parseCutJobStatus(status);
     const result = await this.repo.listCutJobs({
       saleId,
+      search,
       branchCode,
       status: parsedStatus,
       page: page ? Number(page) : undefined,
@@ -39,6 +41,7 @@ export class CutJobsController {
       id: row.id,
       saleId: row.saleLine.saleId,
       saleLineId: row.saleLineId,
+      quoteCode: row.saleLine.sale.quoteNumber ? `COT-${row.saleLine.sale.quoteNumber}` : null,
       status: row.status,
       cutAt: row.cutAt?.toISOString() ?? null,
       requestedWidthM: Number(row.saleLine.requestedWidthM),
@@ -127,6 +130,15 @@ export class CutJobsController {
             requestedHeightM: saleLine.requestedHeightM,
             roomAreaName: null
           }));
+
+      const pieceIds = pieces.map((piece) => piece.id).filter((value): value is string => Boolean(value));
+      if (pieceIds.length > 0) {
+        await this.scrapsRepo.releaseSoftHoldsByCriteria({
+          releasedByEmail: auth.email,
+          saleLineId: saleLine.id,
+          saleLinePieceIds: pieceIds
+        });
+      }
 
       const scrapPolicy = await this.settingsRepo.getScrapPolicy();
       const defaultLocationCode = body.defaultLocationCode ?? body.locationCode;

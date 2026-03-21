@@ -29,6 +29,8 @@ export class PrismaQuoteBatchesRepository {
     customerName?: string;
     customerReference?: string;
     amountPaid?: number;
+    commercialAdjustmentPct?: number;
+    installationAmount?: number;
     lines: LineInput[];
   }) {
     const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
@@ -41,7 +43,11 @@ export class PrismaQuoteBatchesRepository {
     if (!priceList) throw new Error("Lista de precios no encontrada.");
 
     const resolvedLines = await this.resolveLines(input.lines, branch.id, user.email);
-    const { subtotal, tax, total } = computeTotals(resolvedLines.map(l => l.lineSubtotal));
+    const commercialAdjPct = Math.min(Math.max(input.commercialAdjustmentPct ?? 0, 0), 100);
+    const baseSubtotal = round2(resolvedLines.map(l => l.lineSubtotal).reduce((a, b) => a + b, 0));
+    const commercialAdj = round2(baseSubtotal * (commercialAdjPct / 100));
+    const installation = Math.max(input.installationAmount ?? 0, 0);
+    const { subtotal, tax, total } = computeTotals(resolvedLines.map(l => l.lineSubtotal), commercialAdj, installation);
 
     const amountPaid = Math.max(input.amountPaid ?? 0, 0);
     if (amountPaid > total) throw new Error("El abono no puede superar el total.");
@@ -55,6 +61,9 @@ export class PrismaQuoteBatchesRepository {
           customerId: input.customerId ?? null,
           customerName: input.customerName,
           customerReference: input.customerReference,
+          commercialAdjustmentPct: commercialAdjPct,
+          commercialAdjustmentAmount: commercialAdj,
+          installationAmount: installation,
           subtotalAmount: subtotal,
           taxAmount: tax,
           totalAmount: total,
@@ -178,6 +187,8 @@ export class PrismaQuoteBatchesRepository {
     customerName?: string;
     customerReference?: string;
     amountPaid?: number;
+    commercialAdjustmentPct?: number;
+    installationAmount?: number;
     lines?: LineInput[];
   }) {
     const batch = await prismaClient.quoteBatch.findUnique({ where: { id } });
@@ -192,10 +203,17 @@ export class PrismaQuoteBatchesRepository {
     if (input.customerName !== undefined) updateData.customerName = input.customerName;
     if (input.customerReference !== undefined) updateData.customerReference = input.customerReference;
     if (input.amountPaid !== undefined) updateData.amountPaid = Math.max(input.amountPaid, 0);
+    if (input.commercialAdjustmentPct !== undefined) updateData.commercialAdjustmentPct = Math.min(Math.max(input.commercialAdjustmentPct, 0), 100);
+    if (input.installationAmount !== undefined) updateData.installationAmount = Math.max(input.installationAmount, 0);
 
     if (input.lines) {
       const resolvedLines = await this.resolveLines(input.lines, batch.branchId, updatedByEmail);
-      const { subtotal, tax, total } = computeTotals(resolvedLines.map(l => l.lineSubtotal));
+      const adjPct = input.commercialAdjustmentPct !== undefined ? Math.min(Math.max(input.commercialAdjustmentPct, 0), 100) : Number(batch.commercialAdjustmentPct);
+      const linesBase = round2(resolvedLines.map(l => l.lineSubtotal).reduce((a, b) => a + b, 0));
+      const commercialAdj = round2(linesBase * (adjPct / 100));
+      updateData.commercialAdjustmentAmount = commercialAdj;
+      const installation = input.installationAmount !== undefined ? Math.max(input.installationAmount, 0) : Number(batch.installationAmount);
+      const { subtotal, tax, total } = computeTotals(resolvedLines.map(l => l.lineSubtotal), commercialAdj, installation);
       updateData.subtotalAmount = subtotal;
       updateData.taxAmount = tax;
       updateData.totalAmount = total;
@@ -251,6 +269,9 @@ export class PrismaQuoteBatchesRepository {
           customerId: original.customerId,
           customerName: original.customerName,
           customerReference: original.customerReference,
+          commercialAdjustmentPct: original.commercialAdjustmentPct,
+          commercialAdjustmentAmount: original.commercialAdjustmentAmount,
+          installationAmount: original.installationAmount,
           subtotalAmount: original.subtotalAmount,
           taxAmount: original.taxAmount,
           totalAmount: original.totalAmount,
@@ -311,6 +332,27 @@ export class PrismaQuoteBatchesRepository {
     });
   }
 
+  async cancel(id: string, updatedByEmail: string) {
+    const batch = await prismaClient.quoteBatch.findUnique({ where: { id } });
+    if (!batch) throw new Error("Cotización no encontrada.");
+    if (batch.status !== QuoteBatchStatus.DRAFT) throw new Error("Solo se pueden anular cotizaciones en estado DRAFT.");
+
+    const user = await prismaClient.appUser.findUnique({ where: { email: updatedByEmail } });
+    if (!user) throw new Error("Usuario no encontrado.");
+
+    await prismaClient.quoteBatch.update({ where: { id }, data: { status: QuoteBatchStatus.CANCELED } });
+
+    await auditRepo.log({
+      branchId: batch.branchId,
+      actorUserId: user.id,
+      entityType: "quote_batch",
+      entityId: id,
+      action: AuditAction.STATUS_CHANGE,
+      beforeJson: { status: QuoteBatchStatus.DRAFT },
+      afterJson: { status: QuoteBatchStatus.CANCELED }
+    });
+  }
+
   private async resolveLines(lines: LineInput[], branchId: string, createdByEmail: string) {
     type Resolved = LineInput & { skuId: string; categoryId: string | null; displayOrder: number };
     const result: Resolved[] = [];
@@ -341,11 +383,12 @@ export class PrismaQuoteBatchesRepository {
   }
 }
 
-function computeTotals(lineSubtotals: number[]) {
-  const subtotal = round2(lineSubtotals.reduce((a, b) => a + b, 0));
-  const tax = round2(subtotal * 0.19);
-  const total = roundClp(subtotal + tax);
-  return { subtotal, tax, total };
+function computeTotals(lineSubtotals: number[], commercialAdj = 0, installation = 0) {
+  const baseSubtotal = round2(lineSubtotals.reduce((a, b) => a + b, 0));
+  const taxableSubtotal = round2(baseSubtotal + commercialAdj + installation);
+  const tax = round2(taxableSubtotal * 0.19);
+  const total = roundClp(taxableSubtotal + tax);
+  return { subtotal: taxableSubtotal, tax, total };
 }
 
 function round2(v: number) { return Number(v.toFixed(2)); }

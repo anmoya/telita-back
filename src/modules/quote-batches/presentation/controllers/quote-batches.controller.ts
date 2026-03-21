@@ -15,7 +15,7 @@ import { PrismaQuoteBatchesRepository } from "../../infrastructure/persistence/p
 import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
 
 type PriceMethodCode = "LINEAR_METER" | "AREA" | "FIXED" | "TABLE_LOOKUP";
-type QuoteBatchStatusCode = "DRAFT" | "FINALIZED" | "EXPIRED";
+type QuoteBatchStatusCode = "DRAFT" | "FINALIZED" | "EXPIRED" | "CANCELED";
 
 type LineInput = {
   skuCode: string;
@@ -45,6 +45,8 @@ export class QuoteBatchesController {
       customerName?: string;
       customerReference?: string;
       amountPaid?: number;
+      commercialAdjustmentPct?: number;
+      installationAmount?: number;
       lines: LineInput[];
     },
     @Headers("authorization") authorization?: string
@@ -111,6 +113,8 @@ export class QuoteBatchesController {
       customerName?: string;
       customerReference?: string;
       amountPaid?: number;
+      commercialAdjustmentPct?: number;
+      installationAmount?: number;
       lines?: LineInput[];
     },
     @Headers("authorization") authorization?: string
@@ -156,6 +160,22 @@ export class QuoteBatchesController {
       throw new BadRequestException(msg(error));
     }
   }
+
+  @Post(":id/cancel")
+  @HttpCode(HttpStatus.OK)
+  async cancel(
+    @Param("id") id: string,
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    try {
+      await this.repo.cancel(id, auth.email);
+      return { ok: true };
+    } catch (error) {
+      throw new BadRequestException(msg(error));
+    }
+  }
 }
 
 type BatchRow = Awaited<ReturnType<PrismaQuoteBatchesRepository["findById"]>>;
@@ -174,6 +194,9 @@ function serializeBatch(b: NonNullable<BatchRow> | BatchListRow) {
     customerId: b.customerId,
     customerName: b.customerName,
     customerReference: b.customerReference,
+    commercialAdjustmentPct: Number(b.commercialAdjustmentPct),
+    commercialAdjustmentAmount: Number(b.commercialAdjustmentAmount),
+    installationAmount: Number(b.installationAmount),
     subtotalAmount: Number(b.subtotalAmount),
     taxAmount: Number(b.taxAmount),
     totalAmount,

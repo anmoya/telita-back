@@ -1,5 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Headers, Put } from "@nestjs/common";
 import {
+  type CutSheetPolicy,
   PrismaSettingsRepository,
   ScrapRequiredAtStage,
   type CutScrapLookupPolicy,
@@ -119,6 +120,26 @@ export class SettingsController {
     requireAnyRole(auth, ["superadmin", "admin"]);
     try {
       return await this.repo.updateSoftHoldPolicy(body, auth.email);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    }
+  }
+
+  @Get("cut-sheet-policy")
+  async getCutSheetPolicy(@Headers("authorization") authorization?: string) {
+    requireAuth(authorization);
+    return this.repo.getCutSheetPolicy();
+  }
+
+  @Put("cut-sheet-policy")
+  async updateCutSheetPolicy(
+    @Body() body: Partial<CutSheetPolicy>,
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin"]);
+    try {
+      return await this.repo.updateCutSheetPolicy(body, auth.email);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
     }

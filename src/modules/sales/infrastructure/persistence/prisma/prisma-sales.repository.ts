@@ -398,14 +398,18 @@ export class PrismaSalesRepository {
     const sale = await tx.sale.findUnique({ where: { id: saleId } });
     if (!sale) return;
     const lines = await tx.saleLine.findMany({ where: { saleId } });
-    const subtotal = round2(lines.reduce((acc, line) => acc + Number(line.lineTotal), 0));
+    const linesSubtotal = round2(lines.reduce((acc, line) => acc + Number(line.lineTotal), 0));
+    const commercialAdjPct = Number(sale.commercialAdjustmentPct);
+    const commercialAdj = round2(linesSubtotal * (commercialAdjPct / 100));
+    const installation = Number(sale.installationAmount);
+    const subtotal = round2(linesSubtotal + commercialAdj + installation);
     const tax = round2(subtotal * 0.19);
     const total = roundClpCash(subtotal + tax);
     const balanceDue = Math.max(total - Number(sale.amountPaid), 0);
 
     await tx.sale.update({
       where: { id: saleId },
-      data: { subtotalAmount: subtotal, taxAmount: tax, totalAmount: total, balanceDue }
+      data: { commercialAdjustmentAmount: commercialAdj, subtotalAmount: subtotal, taxAmount: tax, totalAmount: total, balanceDue }
     });
   }
 
@@ -497,6 +501,10 @@ export class PrismaSalesRepository {
           });
         }
       }
+      await tx.scrapSoftHold.updateMany({
+        where: { saleId: sale.id, status: SoftHoldStatus.ACTIVE },
+        data: { status: SoftHoldStatus.RELEASED, releasedAt: new Date() }
+      });
       await tx.sale.update({ where: { id: sale.id }, data: { status: SaleStatus.CANCELED, canceledReason } });
     });
 
@@ -521,6 +529,8 @@ export class PrismaSalesRepository {
     manualDiscountPct?: number;
     manualDiscountReason?: string;
     amountPaid?: number;
+    commercialAdjustmentPct?: number;
+    installationAmount?: number;
     items: Array<{
       skuCode: string;
       requestedWidthM: number;
@@ -654,7 +664,11 @@ export class PrismaSalesRepository {
     }
 
     // Compute totals
-    const subtotalAmount = round2(lineDataList.reduce((acc, l) => acc + l.lineTotal, 0));
+    const linesSubtotal = round2(lineDataList.reduce((acc, l) => acc + l.lineTotal, 0));
+    const commercialAdjPct = Math.min(Math.max(input.commercialAdjustmentPct ?? 0, 0), 100);
+    const commercialAdj = round2(linesSubtotal * (commercialAdjPct / 100));
+    const installation = Math.max(input.installationAmount ?? 0, 0);
+    const subtotalAmount = round2(linesSubtotal + commercialAdj + installation);
     const taxAmount = round2(subtotalAmount * 0.19);
     const totalAmount = roundClpCash(subtotalAmount + taxAmount);
 
@@ -686,6 +700,9 @@ export class PrismaSalesRepository {
           discountSource: discount.source,
           discountCodeApplied: discount.code,
           discountPctApplied: discount.pct,
+          commercialAdjustmentPct: commercialAdjPct,
+          commercialAdjustmentAmount: commercialAdj,
+          installationAmount: installation,
           subtotalAmount,
           taxAmount,
           totalAmount,
@@ -826,15 +843,31 @@ export class PrismaSalesRepository {
     return cutJob;
   }
 
-  async listCutJobs(params: { saleId?: string; branchCode?: string; status?: CutJobStatus; page?: number; limit?: number }) {
+  async listCutJobs(params: { saleId?: string; search?: string; branchCode?: string; status?: CutJobStatus; page?: number; limit?: number }) {
     const limit = Math.min(params.limit ?? 8, 100);
     const page = Math.max(params.page ?? 1, 1);
     const skip = (page - 1) * limit;
-    const where = {
+
+    // Parse search: "COT-123" → quoteNumber, else treat as saleId prefix or UUID fragment
+    let searchQuoteNumber: number | undefined;
+    let searchSaleId: string | undefined;
+    if (params.search) {
+      const cotMatch = params.search.match(/^COT-(\d+)$/i);
+      if (cotMatch) {
+        searchQuoteNumber = Number(cotMatch[1]);
+      } else {
+        searchSaleId = params.search;
+      }
+    }
+
+    const where: any = {
       status: params.status,
       saleLine: {
-        saleId: params.saleId,
-        sale: params.branchCode ? { branch: { code: params.branchCode } } : undefined
+        saleId: params.saleId ?? (searchSaleId ? { startsWith: searchSaleId } : undefined),
+        sale: {
+          ...(params.branchCode ? { branch: { code: params.branchCode } } : {}),
+          ...(searchQuoteNumber ? { quoteNumber: searchQuoteNumber } : {})
+        }
       }
     };
 
@@ -845,7 +878,7 @@ export class PrismaSalesRepository {
           saleLine: {
             include: {
               sku: { select: { code: true, name: true } },
-              sale: { select: { id: true, createdAt: true } }
+              sale: { select: { id: true, createdAt: true, quoteNumber: true } }
             }
           }
         },

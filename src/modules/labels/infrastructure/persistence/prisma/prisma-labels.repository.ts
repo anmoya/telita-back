@@ -224,7 +224,8 @@ export class PrismaLabelsRepository {
       prismaClient.label.findMany({
         where,
         include: {
-          printEvents: { orderBy: { printedAt: "desc" }, take: 1 }
+          printEvents: { orderBy: { printedAt: "desc" }, take: 1 },
+          saleLine: { include: { sale: { select: { quoteNumber: true } } } }
         },
         orderBy: { createdAt: "desc" },
         skip,
@@ -518,7 +519,7 @@ function buildSalePiecePayload(input: {
 function renderSingleLabelHtml(label: { id: string; branchId: string; createdAt: Date; type: string; payloadJson: unknown; branch?: { name: string } | null }) {
   const payload = label.payloadJson as Record<string, unknown>;
   const qrCode = (payload.qr as string) ?? `TELITA:LABEL:${label.id}`;
-  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(qrCode)}`;
+  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(qrCode)}`;
   const fields = Object.entries(payload)
     .filter(([, value]) => value !== null && value !== undefined && value !== "")
     .filter(([k]) => !["qr", "kind"].includes(k))
@@ -531,36 +532,41 @@ function renderSingleLabelHtml(label: { id: string; branchId: string; createdAt:
 <meta charset="UTF-8">
 <title>Etiqueta Telita</title>
 <style>
-  @page { size: A4; margin: 12mm; }
+  @page { size: 100mm 45mm; margin: 0; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: Arial, sans-serif; background: #fff; }
-  .label { border: 2px solid #1a1a1a; border-radius: 4px; padding: 8mm; max-width: 180mm; margin: 0 auto; page-break-inside: avoid; }
-  .header { text-align: center; font-size: 20px; font-weight: bold; letter-spacing: 2px; border-bottom: 1px solid #1a1a1a; padding-bottom: 4mm; margin-bottom: 5mm; }
-  .type-badge { display: inline-block; background: #1a1a1a; color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 2px; margin-bottom: 5mm; }
-  .body-row { display: flex; gap: 8mm; align-items: flex-start; }
-  .qr-block img { display: block; border: 1px solid #ccc; }
-  .qr-code-text { font-family: monospace; font-size: 8px; margin-top: 2mm; word-break: break-all; color: #555; max-width: 140px; }
-  .info-block { flex: 1; }
-  .field { display: flex; gap: 6px; font-size: 13px; margin-bottom: 3mm; }
-  .label-key { min-width: 90px; font-weight: bold; color: #333; text-transform: uppercase; font-size: 10px; padding-top: 2px; }
-  .footer { margin-top: 5mm; border-top: 1px solid #ccc; padding-top: 3mm; font-size: 10px; color: #666; display: flex; justify-content: space-between; }
+  body { font-family: Arial, sans-serif; background: #fff; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding: 4mm; }
+  .label { border: 1.5px solid #1a1a1a; border-radius: 1mm; padding: 3mm 4mm; width: 100mm; height: 45mm; overflow: hidden; }
+  .top-row { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1a1a1a; padding-bottom: 1.5mm; margin-bottom: 2mm; }
+  .header { font-size: 12px; font-weight: bold; letter-spacing: 2px; }
+  .type-badge { display: inline-block; background: #1a1a1a; color: #fff; font-size: 8px; padding: 1px 5px; border-radius: 2px; }
+  .body-row { display: flex; gap: 3mm; align-items: flex-start; }
+  .qr-block { flex-shrink: 0; }
+  .qr-block img { display: block; }
+  .info-block { flex: 1; overflow: hidden; }
+  .field { display: flex; gap: 3px; font-size: 9px; margin-bottom: 1mm; line-height: 1.2; }
+  .label-key { min-width: 55px; font-weight: bold; color: #333; text-transform: uppercase; font-size: 7.5px; padding-top: 0.5px; }
+  .field span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .footer { margin-top: auto; border-top: 1px solid #ccc; padding-top: 1mm; font-size: 7px; color: #666; display: flex; justify-content: space-between; }
+  @media screen { body { background: #f0f0f0; padding: 20mm; } .label { box-shadow: 0 1px 4px rgba(0,0,0,.15); background: #fff; } }
+  @media print { .no-print { display: none !important; } }
 </style>
 </head>
 <body>
-<div class="label">
-  <div class="header">TELITA</div>
-  <div class="type-badge">${translateLabelType(label.type)}</div>
-  <div class="body-row">
+<div class="label" style="display:flex;flex-direction:column">
+  <div class="top-row">
+    <span class="header">TELITA</span>
+    <span class="type-badge">${translateLabelType(label.type)}</span>
+  </div>
+  <div class="body-row" style="flex:1;overflow:hidden">
     <div class="qr-block">
-      <img src="${qrUrl}" width="140" height="140" alt="QR" />
-      <div class="qr-code-text">${qrCode}</div>
+      <img src="${qrUrl}" width="80" height="80" alt="QR" />
     </div>
     <div class="info-block">${fields}</div>
   </div>
   <div class="footer">
-    <span>Sucursal: ${label.branch?.name ?? label.branchId.slice(0, 8)}</span>
-    <span>${label.createdAt.toISOString().slice(0, 16).replace("T", " ")} UTC</span>
-    <span>ID: ${label.id.slice(0, 8)}</span>
+    <span>${label.branch?.name ?? label.branchId.slice(0, 8)}</span>
+    <span>${label.createdAt.toISOString().slice(0, 16).replace("T", " ")}</span>
+    <span>${label.id.slice(0, 8)}</span>
   </div>
 </div>
 </body>
@@ -571,26 +577,27 @@ function renderBatchLabelHtml(labels: Array<{ id: string; branchId: string; crea
   const labelCards = labels.map((label) => {
     const payload = label.payloadJson as Record<string, unknown>;
     const qrCode = (payload.qr as string) ?? `TELITA:LABEL:${label.id}`;
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(qrCode)}`;
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(qrCode)}`;
     const fields = Object.entries(payload)
       .filter(([, value]) => value !== null && value !== undefined && value !== "")
       .filter(([k]) => !["qr", "kind"].includes(k))
       .map(([k, v]) => `<div class="field"><span class="label-key">${translatePayloadKey(k)}</span><span>${formatPayloadValue(k, v)}</span></div>`)
       .join("");
-    return `<div class="label">
-  <div class="header">TELITA</div>
-  <div class="type-badge">${translateLabelType(label.type)}</div>
-  <div class="body-row">
+    return `<div class="label" style="display:flex;flex-direction:column">
+  <div class="top-row">
+    <span class="header">TELITA</span>
+    <span class="type-badge">${translateLabelType(label.type)}</span>
+  </div>
+  <div class="body-row" style="flex:1;overflow:hidden">
     <div class="qr-block">
-      <img src="${qrUrl}" width="120" height="120" alt="QR" />
-      <div class="qr-code-text">${qrCode}</div>
+      <img src="${qrUrl}" width="80" height="80" alt="QR" />
     </div>
     <div class="info-block">${fields}</div>
   </div>
   <div class="footer">
-    <span>Sucursal: ${label.branch?.name ?? label.branchId.slice(0, 8)}</span>
-    <span>${label.createdAt.toISOString().slice(0, 16).replace("T", " ")} UTC</span>
-    <span>ID: ${label.id.slice(0, 8)}</span>
+    <span>${label.branch?.name ?? label.branchId.slice(0, 8)}</span>
+    <span>${label.createdAt.toISOString().slice(0, 16).replace("T", " ")}</span>
+    <span>${label.id.slice(0, 8)}</span>
   </div>
 </div>`;
   }).join("\n");
@@ -601,27 +608,28 @@ function renderBatchLabelHtml(labels: Array<{ id: string; branchId: string; crea
 <meta charset="UTF-8">
 <title>Etiquetas Telita</title>
 <style>
-  @page { size: A4; margin: 10mm; }
+  @page { size: 100mm 45mm; margin: 0; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: Arial, sans-serif; background: #fff; }
-  .sheet { display: grid; grid-template-columns: 1fr 1fr; gap: 8mm; }
-  .label { border: 2px solid #1a1a1a; border-radius: 4px; padding: 6mm; page-break-inside: avoid; break-inside: avoid; }
-  .header { text-align: center; font-size: 16px; font-weight: bold; letter-spacing: 2px; border-bottom: 1px solid #1a1a1a; padding-bottom: 3mm; margin-bottom: 4mm; }
-  .type-badge { display: inline-block; background: #1a1a1a; color: #fff; font-size: 10px; padding: 2px 6px; border-radius: 2px; margin-bottom: 4mm; }
-  .body-row { display: flex; gap: 6mm; align-items: flex-start; }
-  .qr-block img { display: block; border: 1px solid #ccc; }
-  .qr-code-text { font-family: monospace; font-size: 7px; margin-top: 1mm; word-break: break-all; color: #555; max-width: 120px; }
-  .info-block { flex: 1; }
-  .field { display: flex; gap: 4px; font-size: 11px; margin-bottom: 2mm; }
-  .label-key { min-width: 80px; font-weight: bold; color: #333; text-transform: uppercase; font-size: 9px; padding-top: 1px; }
-  .footer { margin-top: 4mm; border-top: 1px solid #ccc; padding-top: 2mm; font-size: 9px; color: #666; display: flex; justify-content: space-between; }
+  .sheet { display: flex; flex-direction: column; align-items: center; gap: 0; }
+  .label { border: 1.5px solid #1a1a1a; border-radius: 1mm; padding: 3mm 4mm; width: 100mm; height: 45mm; overflow: hidden; page-break-after: always; break-after: page; }
+  .top-row { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1a1a1a; padding-bottom: 1.5mm; margin-bottom: 2mm; }
+  .header { font-size: 12px; font-weight: bold; letter-spacing: 2px; }
+  .type-badge { display: inline-block; background: #1a1a1a; color: #fff; font-size: 8px; padding: 1px 5px; border-radius: 2px; }
+  .body-row { display: flex; gap: 3mm; align-items: flex-start; }
+  .qr-block { flex-shrink: 0; }
+  .qr-block img { display: block; }
+  .info-block { flex: 1; overflow: hidden; }
+  .field { display: flex; gap: 3px; font-size: 9px; margin-bottom: 1mm; line-height: 1.2; }
+  .label-key { min-width: 55px; font-weight: bold; color: #333; text-transform: uppercase; font-size: 7.5px; padding-top: 0.5px; }
+  .field span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .footer { margin-top: auto; border-top: 1px solid #ccc; padding-top: 1mm; font-size: 7px; color: #666; display: flex; justify-content: space-between; }
+  @media screen { body { background: #f0f0f0; padding: 10mm; } .sheet { gap: 6mm; } .label { box-shadow: 0 1px 4px rgba(0,0,0,.15); background: #fff; break-after: auto; } }
   @media print { .no-print { display: none !important; } }
 </style>
 </head>
 <body>
-<div class="no-print"><button onclick="window.print()">Imprimir</button></div>
 <div class="sheet">${labelCards}</div>
-<script>window.onload = function() { window.print(); }</script>
 </body>
 </html>`;
 }
@@ -635,14 +643,14 @@ function renderLabelZpl(label: { id: string; type: string; payloadJson: unknown 
   const qr = zplText((payload.qr as string) ?? `TELITA:LABEL:${label.id}`);
   return `^XA
 ^PW800
-^LL600
-^FO40,30^A0N,32,32^FDTELITA ${translateLabelType(label.type)}^FS
-^FO40,90^A0N,28,28^FD${line1}^FS
-^FO40,140^A0N,28,28^FD${line2}^FS
-^FO40,190^A0N,28,28^FD${line3}^FS
-^FO40,240^A0N,28,28^FD${line4}^FS
-^FO40,300^BQN,2,6^FDLA,${qr}^FS
-^FO40,520^A0N,24,24^FD${zplText(label.id.slice(0, 8).toUpperCase())}^FS
+^LL360
+^FO40,20^A0N,28,28^FDTELITA ${translateLabelType(label.type)}^FS
+^FO40,58^A0N,22,22^FD${line1}^FS
+^FO40,88^A0N,22,22^FD${line2}^FS
+^FO40,118^A0N,22,22^FD${line3}^FS
+^FO40,148^A0N,22,22^FD${line4}^FS
+^FO540,58^BQN,2,4^FDLA,${qr}^FS
+^FO40,320^A0N,20,20^FD${zplText(label.id.slice(0, 8).toUpperCase())}^FS
 ^XZ`;
 }
 

@@ -1,5 +1,5 @@
 import { Type } from "class-transformer";
-import { ArrayMinSize, IsArray, IsIn, IsNumber, IsOptional, IsString, Min, ValidateNested } from "class-validator";
+import { ArrayMinSize, IsArray, IsIn, IsNumber, IsOptional, IsString, Max, Min, ValidateNested } from "class-validator";
 
 export class CreateQuoteDto {
   @IsString()
@@ -121,6 +121,19 @@ export class PreviewRequestDto {
   @IsOptional()
   @IsString()
   customerReference?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  commercialAdjustmentPct?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  installationAmount?: number;
 
   @IsArray()
   @ArrayMinSize(1)

@@ -391,8 +391,8 @@ async function main() {
   // Seed status labels (Spec-23)
   const statusLabelsData = [
     // Sale statuses
-    { entityType: "sale", statusCode: "DRAFT", labelEs: "Borrador", descriptionEs: "Cotización en preparación, aún no confirmada ni enviada al taller." },
-    { entityType: "sale", statusCode: "CONFIRMED", labelEs: "Confirmada", descriptionEs: "Venta confirmada. Se han generado los trabajos de corte." },
+    { entityType: "sale", statusCode: "DRAFT", labelEs: "En preparación", descriptionEs: "Venta en preparación, aún no formalizada como Orden de Compra." },
+    { entityType: "sale", statusCode: "CONFIRMED", labelEs: "Orden de Compra", descriptionEs: "Orden de Compra formalizada. Se han generado los trabajos de corte." },
     { entityType: "sale", statusCode: "CANCELED", labelEs: "Anulada", descriptionEs: "Venta cancelada. No genera corte ni movimiento de stock." },
     // CutJob statuses
     { entityType: "cut_job", statusCode: "PENDING", labelEs: "Pendiente", descriptionEs: "El corte fue programado y está en espera de ejecución." },

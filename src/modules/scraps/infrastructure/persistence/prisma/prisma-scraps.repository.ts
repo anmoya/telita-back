@@ -101,6 +101,74 @@ export class PrismaScrapsRepository {
       .sort((a, b) => a.excessAreaM2 - b.excessAreaM2);
   }
 
+  async previewQuoteOpportunity(params: {
+    branchCode: string;
+    items: Array<{
+      itemId: string;
+      itemIndex: number;
+      skuCode: string;
+      requestedWidthM: number;
+      requestedHeightM: number;
+      quantity: number;
+    }>;
+  }) {
+    await this.expireStaleHolds();
+
+    const eligibleItems = params.items.filter((item) =>
+      Boolean(item.skuCode)
+      && Number.isFinite(item.requestedWidthM)
+      && item.requestedWidthM > 0
+      && Number.isFinite(item.requestedHeightM)
+      && item.requestedHeightM > 0
+      && Number.isFinite(item.quantity)
+      && item.quantity > 0
+    );
+
+    const results = await Promise.all(
+      eligibleItems.map(async (item) => {
+        const qty = Math.max(1, Number(item.quantity));
+        const matches = await this.match({
+          branchCode: params.branchCode,
+          skuCode: item.skuCode,
+          requestedWidthM: Number(item.requestedWidthM),
+          requestedHeightM: Number(item.requestedHeightM),
+          limit: Math.min(qty, 10)
+        });
+
+        return matches.slice(0, qty).map((match, matchIndex) => ({
+          key: `${item.itemId}-${match.id}-${matchIndex + 1}`,
+          itemId: item.itemId,
+          itemIndex: item.itemIndex,
+          pieceIndex: matchIndex + 1,
+          pieceTotal: qty,
+          skuCode: item.skuCode,
+          requestedWidthM: Number(item.requestedWidthM),
+          requestedHeightM: Number(item.requestedHeightM),
+          scrapId: match.id,
+          locationCode: match.location?.code ?? null,
+          areaM2: Number(match.areaM2),
+          excessAreaM2: Number(match.excessAreaM2.toFixed(3))
+        }));
+      })
+    );
+
+    const items = results.flat().sort((a, b) => {
+      if (a.itemIndex !== b.itemIndex) return a.itemIndex - b.itemIndex;
+      return a.pieceIndex - b.pieceIndex;
+    });
+    const linesWithOpportunity = new Set(items.map((item) => item.itemId)).size;
+    const totalPieces = eligibleItems.reduce((sum, item) => sum + Math.max(1, Number(item.quantity)), 0);
+
+    return {
+      items,
+      summary: {
+        assignedPieces: items.length,
+        totalPieces,
+        linesWithOpportunity
+      }
+    };
+  }
+
   async matchForCutJob(params: {
     cutJobId: string;
     scope: "CURRENT_LINE" | "ENTIRE_ORDER";
@@ -382,7 +450,9 @@ export class PrismaScrapsRepository {
       }
     });
     if (!saleLine) throw new Error("Línea de venta no encontrada.");
-    if (saleLine.sale.status !== "DRAFT") throw new Error("Solo se puede asignar a líneas de venta en estado DRAFT.");
+    if (!canManuallyAllocateScrap(saleLine.sale.status)) {
+      throw new Error("Solo se puede asignar a líneas de venta en estado DRAFT o CONFIRMED.");
+    }
     const piece = saleLine.pieces[0];
     if (!piece) throw new Error("Pieza de venta no encontrada.");
 
@@ -469,7 +539,9 @@ export class PrismaScrapsRepository {
       include: { sale: true }
     });
     if (!saleLine) throw new Error("Línea de venta no encontrada.");
-    if (saleLine.sale.status !== "DRAFT") throw new Error("Solo se puede liberar una asignación de líneas en estado DRAFT.");
+    if (!canManuallyAllocateScrap(saleLine.sale.status)) {
+      throw new Error("Solo se puede liberar una asignación de líneas en estado DRAFT o CONFIRMED.");
+    }
 
     await prismaClient.saleLineScrapAllocation.update({
       where: { id: allocation.id },
@@ -804,14 +876,15 @@ export class PrismaScrapsRepository {
     return { ...scrap, isUseful };
   }
 
-  async list(params: { branchCode?: string; status?: string; page?: number; limit?: number }) {
+  async list(params: { branchCode?: string; status?: string; page?: number; limit?: number; quoteNumber?: number }) {
     const status = parseScrapStatus(params.status);
     const limit = Math.min(params.limit ?? 8, 100);
     const page = Math.max(params.page ?? 1, 1);
     const skip = (page - 1) * limit;
     const where = {
       branch: params.branchCode ? { code: params.branchCode } : undefined,
-      status
+      status,
+      ...(params.quoteNumber ? { saleLine: { sale: { quoteNumber: params.quoteNumber } } } : {})
     };
 
     const [data, total] = await Promise.all([
@@ -820,7 +893,8 @@ export class PrismaScrapsRepository {
         include: {
           location: true,
           sku: true,
-          quote: true
+          quote: true,
+          saleLine: { include: { sale: { select: { quoteNumber: true } } } }
         },
         orderBy: { createdAt: "desc" },
         skip,
@@ -1282,6 +1356,7 @@ export class PrismaScrapsRepository {
     scrapId: string;
     saleId: string;
     saleLineId?: string;
+    saleLinePieceId?: string;
     heldByEmail: string;
     minutes: number;
     reason?: string;
@@ -1319,6 +1394,7 @@ export class PrismaScrapsRepository {
         scrapId: input.scrapId,
         saleId: input.saleId,
         saleLineId: input.saleLineId ?? null,
+        saleLinePieceId: input.saleLinePieceId ?? null,
         heldBy: user.id,
         reason: input.reason?.trim() || null,
         expiresAt
@@ -1335,6 +1411,7 @@ export class PrismaScrapsRepository {
         scrapId: input.scrapId,
         saleId: input.saleId,
         saleLineId: input.saleLineId ?? null,
+        saleLinePieceId: input.saleLinePieceId ?? null,
         minutes: clampedMinutes,
         expiresAt: expiresAt.toISOString()
       }
@@ -1375,10 +1452,320 @@ export class PrismaScrapsRepository {
       include: { heldByUser: { select: { email: true, fullName: true } } }
     });
   }
+
+  async releaseSoftHoldsByCriteria(input: {
+    releasedByEmail: string;
+    saleId?: string;
+    saleLineId?: string;
+    saleLinePieceIds?: string[];
+    holdIds?: string[];
+  }) {
+    const user = await prismaClient.appUser.findUnique({ where: { email: input.releasedByEmail } });
+    if (!user) throw new Error("Usuario no encontrado.");
+
+    const holds = await prismaClient.scrapSoftHold.findMany({
+      where: {
+        status: SoftHoldStatus.ACTIVE,
+        ...(input.saleId ? { saleId: input.saleId } : {}),
+        ...(input.saleLineId ? { saleLineId: input.saleLineId } : {}),
+        ...(input.saleLinePieceIds?.length ? { saleLinePieceId: { in: input.saleLinePieceIds } } : {}),
+        ...(input.holdIds?.length ? { id: { in: input.holdIds } } : {})
+      }
+    });
+
+    for (const hold of holds) {
+      await prismaClient.scrapSoftHold.update({
+        where: { id: hold.id },
+        data: { status: SoftHoldStatus.RELEASED, releasedAt: new Date() }
+      });
+      await this.auditRepo.log({
+        branchId: hold.branchId,
+        actorUserId: user.id,
+        entityType: "scrap_soft_hold",
+        entityId: hold.id,
+        action: AuditAction.STATUS_CHANGE,
+        beforeJson: { status: "ACTIVE" },
+        afterJson: {
+          status: "RELEASED",
+          releasedAt: new Date().toISOString(),
+          saleId: hold.saleId,
+          saleLineId: hold.saleLineId,
+          saleLinePieceId: hold.saleLinePieceId ?? null
+        }
+      });
+    }
+  }
+
+  async generateCutSheet(input: { saleId: string; requestedByEmail: string; reserveSuggestedScraps: boolean }) {
+    await this.expireStaleHolds();
+
+    const user = await prismaClient.appUser.findUnique({ where: { email: input.requestedByEmail } });
+    if (!user) throw new Error("Usuario no encontrado.");
+
+    const cutSheetPolicy = await this.settingsRepo.getCutSheetPolicy();
+    if (cutSheetPolicy.mode === "DISABLED") {
+      throw new Error("La hoja de corte está deshabilitada.");
+    }
+
+    const softHoldPolicy = await this.settingsRepo.getSoftHoldPolicy();
+    const shouldReserve = cutSheetPolicy.mode === "GUIDE_ONLY" ? false : input.reserveSuggestedScraps;
+    if (shouldReserve && !softHoldPolicy.enabled) {
+      throw new Error("La reserva temporal de retazos no está habilitada.");
+    }
+
+    const sale = await prismaClient.sale.findUnique({
+      where: { id: input.saleId },
+      include: {
+        branch: true,
+        customer: true,
+        lines: {
+          include: {
+            sku: true,
+            pieces: {
+              include: {
+                allocations: {
+                  where: { isActive: true },
+                  include: { scrap: { include: { location: true } } }
+                }
+              },
+              orderBy: { pieceIndex: "asc" }
+            }
+          },
+          orderBy: [{ displayOrder: "asc" }, { createdAt: "asc" }]
+        }
+      }
+    });
+    if (!sale) throw new Error("Venta no encontrada.");
+    if (sale.status !== "CONFIRMED") throw new Error("La hoja de corte solo está disponible para ventas CONFIRMED.");
+
+    const activeHolds = await prismaClient.scrapSoftHold.findMany({
+      where: { saleId: sale.id, status: SoftHoldStatus.ACTIVE, expiresAt: { gt: new Date() } },
+      include: {
+        scrap: {
+          include: {
+            location: true,
+            allocations: { where: { isActive: true }, select: { id: true } }
+          }
+        }
+      }
+    });
+
+    const holdsByPiece = new Map<string, (typeof activeHolds)[number]>();
+    for (const hold of activeHolds) {
+      if (hold.saleLinePieceId) holdsByPiece.set(hold.saleLinePieceId, hold);
+    }
+
+    const reuseRows: Array<{
+      saleLineId: string;
+      saleLinePieceId: string;
+      pieceIndex: number;
+      pieceTotal: number;
+      skuCode: string;
+      skuName: string;
+      roomAreaName: string | null;
+      requestedWidthM: number;
+      requestedHeightM: number;
+      scrapId: string;
+      locationCode: string | null;
+      scrapWidthM: number;
+      scrapHeightM: number;
+      stateLabel: string;
+    }> = [];
+    const cutRows: Array<{
+      saleLineId: string;
+      saleLinePieceId: string;
+      pieceIndex: number;
+      pieceTotal: number;
+      skuCode: string;
+      skuName: string;
+      roomAreaName: string | null;
+      requestedWidthM: number;
+      requestedHeightM: number;
+      reason: string;
+    }> = [];
+
+    const pickedScrapIds = new Set<string>();
+    const keepHoldIds = new Set<string>();
+
+    for (const line of sale.lines) {
+      for (const piece of line.pieces) {
+        if (piece.allocations.length > 0) {
+          const allocation = piece.allocations[0];
+          pickedScrapIds.add(allocation.scrapId);
+          reuseRows.push({
+            saleLineId: line.id,
+            saleLinePieceId: piece.id,
+            pieceIndex: piece.pieceIndex,
+            pieceTotal: piece.pieceTotal,
+            skuCode: line.sku.code,
+            skuName: line.sku.name,
+            roomAreaName: piece.roomAreaName ?? line.roomAreaName ?? null,
+            requestedWidthM: Number(piece.requestedWidthM),
+            requestedHeightM: Number(piece.requestedHeightM),
+            scrapId: allocation.scrapId,
+            locationCode: allocation.scrap.location?.code ?? null,
+            scrapWidthM: Number(allocation.scrap.widthM),
+            scrapHeightM: Number(allocation.scrap.heightM),
+            stateLabel: "Asignado"
+          });
+          continue;
+        }
+
+        const existingHold = holdsByPiece.get(piece.id);
+        let chosen:
+          | {
+              scrapId: string;
+              widthM: number;
+              heightM: number;
+              locationCode: string | null;
+              existingHoldId?: string;
+              stateLabel: string;
+            }
+          | null = null;
+
+        const holdScrapAvailable = existingHold
+          && existingHold.scrap.status === ScrapStatus.STORED
+          && existingHold.scrap.allocations.length === 0
+          && !pickedScrapIds.has(existingHold.scrapId);
+
+        if (holdScrapAvailable) {
+          chosen = {
+            scrapId: existingHold.scrapId,
+            widthM: Number(existingHold.scrap.widthM),
+            heightM: Number(existingHold.scrap.heightM),
+            locationCode: existingHold.scrap.location?.code ?? null,
+            existingHoldId: existingHold.id,
+            stateLabel: "Reservado"
+          };
+          keepHoldIds.add(existingHold.id);
+        } else {
+          const matches = await this.match({
+            branchCode: sale.branch.code,
+            skuCode: line.sku.code,
+            requestedWidthM: Number(piece.requestedWidthM),
+            requestedHeightM: Number(piece.requestedHeightM),
+            limit: 10
+          });
+          const match = matches.find((candidate) => !pickedScrapIds.has(candidate.id));
+          if (match) {
+            chosen = {
+              scrapId: match.id,
+              widthM: Number(match.widthM),
+              heightM: Number(match.heightM),
+              locationCode: match.location?.code ?? null,
+              stateLabel: shouldReserve ? "Reservado" : "Solo guía"
+            };
+          }
+        }
+
+        if (!chosen) {
+          cutRows.push({
+            saleLineId: line.id,
+            saleLinePieceId: piece.id,
+            pieceIndex: piece.pieceIndex,
+            pieceTotal: piece.pieceTotal,
+            skuCode: line.sku.code,
+            skuName: line.sku.name,
+            roomAreaName: piece.roomAreaName ?? line.roomAreaName ?? null,
+            requestedWidthM: Number(piece.requestedWidthM),
+            requestedHeightM: Number(piece.requestedHeightM),
+            reason: "Sin retazo sugerido"
+          });
+          continue;
+        }
+
+        pickedScrapIds.add(chosen.scrapId);
+
+        if (shouldReserve) {
+          const expiresAt = new Date(Date.now() + softHoldPolicy.defaultMinutes * 60_000);
+          if (chosen.existingHoldId) {
+            await prismaClient.scrapSoftHold.update({
+              where: { id: chosen.existingHoldId },
+              data: { expiresAt, reason: "cut_sheet" }
+            });
+          } else {
+            if (existingHold?.id) {
+              await this.releaseSoftHoldsByCriteria({
+                releasedByEmail: input.requestedByEmail,
+                holdIds: [existingHold.id]
+              });
+            }
+            const createdHold = await this.createSoftHold({
+              scrapId: chosen.scrapId,
+              saleId: sale.id,
+              saleLineId: line.id,
+              saleLinePieceId: piece.id,
+              heldByEmail: input.requestedByEmail,
+              minutes: softHoldPolicy.defaultMinutes,
+              reason: "cut_sheet"
+            });
+            keepHoldIds.add(createdHold.id);
+          }
+        }
+
+        reuseRows.push({
+          saleLineId: line.id,
+          saleLinePieceId: piece.id,
+          pieceIndex: piece.pieceIndex,
+          pieceTotal: piece.pieceTotal,
+          skuCode: line.sku.code,
+          skuName: line.sku.name,
+          roomAreaName: piece.roomAreaName ?? line.roomAreaName ?? null,
+          requestedWidthM: Number(piece.requestedWidthM),
+          requestedHeightM: Number(piece.requestedHeightM),
+          scrapId: chosen.scrapId,
+          locationCode: chosen.locationCode,
+          scrapWidthM: chosen.widthM,
+          scrapHeightM: chosen.heightM,
+          stateLabel: chosen.stateLabel
+        });
+      }
+    }
+
+    if (shouldReserve) {
+      const staleHoldIds = activeHolds
+        .filter((hold) => hold.saleLinePieceId && !keepHoldIds.has(hold.id))
+        .map((hold) => hold.id);
+      if (staleHoldIds.length > 0) {
+        await this.releaseSoftHoldsByCriteria({
+          releasedByEmail: input.requestedByEmail,
+          holdIds: staleHoldIds
+        });
+      }
+    }
+
+    const labels = reuseRows.length > 0
+      ? await prismaClient.label.findMany({
+          where: { scrapId: { in: reuseRows.map((row) => row.scrapId) } },
+          select: { scrapId: true, id: true }
+        })
+      : [];
+    const labelByScrapId = new Map(labels.map((label) => [label.scrapId, label.id.slice(0, 8)]));
+
+    return {
+      saleId: sale.id,
+      quoteCode: sale.quoteNumber ? `COT-${sale.quoteNumber}` : sale.id.slice(0, 8),
+      customerName: sale.customer?.fullName ?? sale.customerName ?? "—",
+      customerReference: sale.customer?.companyOrReference ?? sale.customerReference ?? "—",
+      branchName: sale.branch.name,
+      generatedAt: new Date().toISOString(),
+      shouldReserve,
+      isGuideOnly: !shouldReserve,
+      reuseRows: reuseRows.map((row) => ({
+        ...row,
+        labelCode: labelByScrapId.get(row.scrapId) ?? row.scrapId.slice(0, 8)
+      })),
+      cutRows
+    };
+  }
 }
 
 function round3(value: number): number {
   return Number(value.toFixed(3));
+}
+
+function canManuallyAllocateScrap(status: string): boolean {
+  return status === "DRAFT" || status === "CONFIRMED";
 }
 
 function parseScrapStatus(value?: string): ScrapStatus | undefined {

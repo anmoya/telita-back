@@ -23,6 +23,7 @@ enum QuoteBatchStatus {
   DRAFT
   FINALIZED
   EXPIRED
+  CANCELED
 }
 
 enum PriceMethod {
@@ -85,6 +86,7 @@ enum DiscountSource {
   CUSTOMER_CODE
   MANUAL
 }
+
 
 model Brand {
   id        String   @id @default(uuid()) @db.Uuid
@@ -400,6 +402,9 @@ model Sale {
   discountSource  DiscountSource @default(NONE) @map("discount_source")
   discountCodeApplied String? @map("discount_code_applied") @db.VarChar(40)
   discountPctApplied Decimal @default(0) @map("discount_pct_applied") @db.Decimal(5, 2)
+  commercialAdjustmentPct    Decimal @default(0) @map("commercial_adjustment_pct") @db.Decimal(5, 2)
+  commercialAdjustmentAmount Decimal @default(0) @map("commercial_adjustment_amount") @db.Decimal(14, 2)
+  installationAmount Decimal @default(0) @map("installation_amount") @db.Decimal(14, 2)
   subtotalAmount  Decimal   @default(0) @map("subtotal_amount") @db.Decimal(14, 2)
   taxAmount       Decimal   @default(0) @map("tax_amount") @db.Decimal(14, 2)
   totalAmount     Decimal   @default(0) @map("total_amount") @db.Decimal(14, 2)
@@ -447,6 +452,9 @@ model QuoteBatch {
   customerId        String?          @map("customer_id") @db.Uuid
   customerName      String?          @map("customer_name") @db.VarChar(160)
   customerReference String?          @map("customer_reference") @db.VarChar(120)
+  commercialAdjustmentPct    Decimal @default(0) @map("commercial_adjustment_pct") @db.Decimal(5, 2)
+  commercialAdjustmentAmount Decimal @default(0) @map("commercial_adjustment_amount") @db.Decimal(14, 2)
+  installationAmount Decimal @default(0) @map("installation_amount") @db.Decimal(14, 2)
   subtotalAmount    Decimal          @default(0) @map("subtotal_amount") @db.Decimal(14, 2)
   taxAmount         Decimal          @default(0) @map("tax_amount") @db.Decimal(14, 2)
   totalAmount       Decimal          @default(0) @map("total_amount") @db.Decimal(14, 2)
@@ -534,6 +542,7 @@ model SaleLinePiece {
   labels   Label[]
   scraps   Scrap[]
   allocations SaleLineScrapAllocation[]
+  softHolds ScrapSoftHold[]
 
   @@unique([saleLineId, pieceIndex])
   @@index([saleLineId])
@@ -679,6 +688,7 @@ model ScrapSoftHold {
   scrapId     String         @map("scrap_id") @db.Uuid
   saleId      String         @map("sale_id") @db.Uuid
   saleLineId  String?        @map("sale_line_id") @db.Uuid
+  saleLinePieceId String?    @map("sale_line_piece_id") @db.Uuid
   heldBy      String         @map("held_by") @db.Uuid
   reason      String?        @db.VarChar(200)
   status      SoftHoldStatus @default(ACTIVE)
@@ -691,10 +701,12 @@ model ScrapSoftHold {
   scrap       Scrap     @relation(fields: [scrapId], references: [id])
   sale        Sale      @relation(fields: [saleId], references: [id])
   saleLine    SaleLine? @relation(fields: [saleLineId], references: [id])
+  saleLinePiece SaleLinePiece? @relation(fields: [saleLinePieceId], references: [id])
   heldByUser  AppUser   @relation("SoftHoldHeldBy", fields: [heldBy], references: [id])
 
   @@index([scrapId, status])
   @@index([saleId])
+  @@index([saleLinePieceId])
   @@index([expiresAt])
   @@map("scrap_soft_hold")
 }

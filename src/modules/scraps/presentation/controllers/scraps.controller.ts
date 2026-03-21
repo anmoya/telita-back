@@ -73,10 +73,43 @@ export class ScrapsController {
     }));
   }
 
+  @Post("quote-opportunity-preview")
+  async quoteOpportunityPreview(
+    @Body() body: {
+      branchCode?: string;
+      items?: Array<{
+        itemId: string;
+        itemIndex: number;
+        skuCode: string;
+        requestedWidthM: number;
+        requestedHeightM: number;
+        quantity: number;
+      }>;
+    },
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    if (!body.items?.length) {
+      throw new BadRequestException("items is required.");
+    }
+
+    const result = await this.repo.previewQuoteOpportunity({
+      branchCode: body.branchCode ?? "MAIN",
+      items: body.items
+    });
+
+    return {
+      items: result.items,
+      summary: result.summary
+    };
+  }
+
   @Get()
   async list(
     @Query("branchCode") branchCode?: string,
     @Query("status") status?: string,
+    @Query("quoteCode") quoteCode?: string,
     @Query("page") page?: string,
     @Query("limit") limit?: string,
     @Headers("authorization") authorization?: string
@@ -84,9 +117,12 @@ export class ScrapsController {
     const auth = requireAuth(authorization);
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     const typedStatus = status ? status.toUpperCase() : undefined;
+    const rawNumber = quoteCode ? parseInt(quoteCode.replace(/^COT-/i, ""), 10) : NaN;
+    const quoteNumber = Number.isFinite(rawNumber) && rawNumber > 0 ? rawNumber : undefined;
     const result = await this.repo.list({
       branchCode,
       status: typedStatus,
+      quoteNumber,
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined
     });
@@ -100,6 +136,7 @@ export class ScrapsController {
         skuCode: scrap.sku.code,
         locationCode: scrap.location?.code ?? null,
         quoteId: scrap.quoteId,
+        quoteCode: scrap.saleLine?.sale?.quoteNumber ? `COT-${scrap.saleLine.sale.quoteNumber}` : null,
         createdAt: scrap.createdAt.toISOString()
       })),
       total: result.total,
@@ -133,7 +170,7 @@ export class ScrapsController {
   @Post(":id/soft-hold")
   async createSoftHold(
     @Param("id") id: string,
-    @Body() body: { saleId: string; saleLineId?: string; minutes?: number; reason?: string },
+    @Body() body: { saleId: string; saleLineId?: string; saleLinePieceId?: string; minutes?: number; reason?: string },
     @Headers("authorization") authorization?: string
   ) {
     const auth = requireAuth(authorization);
@@ -143,6 +180,7 @@ export class ScrapsController {
         scrapId: id,
         saleId: body.saleId,
         saleLineId: body.saleLineId,
+        saleLinePieceId: body.saleLinePieceId,
         heldByEmail: auth.email,
         minutes: body.minutes ?? 15,
         reason: body.reason
@@ -167,6 +205,7 @@ export class ScrapsController {
       scrapId: hold.scrapId,
       saleId: hold.saleId,
       saleLineId: hold.saleLineId,
+      saleLinePieceId: hold.saleLinePieceId,
       status: hold.status,
       expiresAt: hold.expiresAt.toISOString(),
       heldBy: { email: hold.heldByUser.email, fullName: hold.heldByUser.fullName },

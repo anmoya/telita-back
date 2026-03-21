@@ -341,6 +341,9 @@ export class SalesController {
       discountSource: sale.discountSource,
       discountCodeApplied: sale.discountCodeApplied,
       discountPctApplied: Number(sale.discountPctApplied),
+      commercialAdjustmentPct: Number(sale.commercialAdjustmentPct),
+      commercialAdjustmentAmount: Number(sale.commercialAdjustmentAmount),
+      installationAmount: Number(sale.installationAmount),
       subtotalAmount: Number(sale.subtotalAmount),
       taxAmount: Number(sale.taxAmount),
       totalAmount: Number(sale.totalAmount),
@@ -576,6 +579,23 @@ export class SalesController {
     return new StreamableFile(Buffer.from(renderSaleDocumentHtml(sale, "work-order"), "utf-8"), { type: "text/html; charset=utf-8" });
   }
 
+  @Post(":saleId/print/cut-sheet/html")
+  @Header("Content-Type", "text/html; charset=utf-8")
+  async printCutSheetHtml(
+    @Param("saleId") saleId: string,
+    @Body() body: { reserveSuggestedScraps?: boolean },
+    @Headers("authorization") authorization?: string
+  ) {
+    const auth = requireAuth(authorization);
+    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+    const cutSheet = await this.scrapsRepo.generateCutSheet({
+      saleId,
+      requestedByEmail: auth.email,
+      reserveSuggestedScraps: Boolean(body.reserveSuggestedScraps)
+    });
+    return new StreamableFile(Buffer.from(renderCutSheetHtml(cutSheet), "utf-8"), { type: "text/html; charset=utf-8" });
+  }
+
   @Get(":saleId/print/sale/zpl")
   @Header("Content-Type", "text/plain; charset=utf-8")
   async printSaleZpl(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string) {
@@ -619,7 +639,7 @@ function renderSaleDocumentHtml(sale: Awaited<ReturnType<PrismaSalesRepository["
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>${mode === "sale" ? "Venta" : "Orden de trabajo"} ${sale.quoteNumber}</title>
+<title>${mode === "sale" ? (sale.status === "CONFIRMED" ? "Orden de Compra" : "Venta") : "Orden de trabajo"} ${sale.quoteNumber}</title>
 <style>
   @page { size: A4; margin: 12mm; }
   body { font-family: Arial, sans-serif; color: #111; }
@@ -632,7 +652,7 @@ function renderSaleDocumentHtml(sale: Awaited<ReturnType<PrismaSalesRepository["
 </style>
 </head>
 <body>
-  <h1>${mode === "sale" ? "Venta" : "Orden de trabajo"} COT-${sale.quoteNumber}</h1>
+  <h1>${mode === "sale" ? (sale.status === "CONFIRMED" ? "Orden de Compra" : "Venta") : "Orden de trabajo"} COT-${sale.quoteNumber}</h1>
   <div class="meta">
     <div class="meta-card">
       <p><strong>Sucursal:</strong> ${sale.branch.name}</p>
@@ -661,6 +681,8 @@ function renderSaleDocumentHtml(sale: Awaited<ReturnType<PrismaSalesRepository["
   </table>
   ${showPrices ? `<div class="totals">
     <p><strong>Subtotal:</strong> ${Number(sale.subtotalAmount).toLocaleString()}</p>
+    ${Number(sale.commercialAdjustmentAmount) > 0 ? `<p><strong>Recargo comercial (${Number(sale.commercialAdjustmentPct)}%):</strong> ${Number(sale.commercialAdjustmentAmount).toLocaleString()}</p>` : ""}
+    ${Number(sale.installationAmount) > 0 ? `<p><strong>Instalación:</strong> ${Number(sale.installationAmount).toLocaleString()}</p>` : ""}
     <p><strong>IVA:</strong> ${Number(sale.taxAmount).toLocaleString()}</p>
     <p><strong>Total:</strong> ${Number(sale.totalAmount).toLocaleString()}</p>
     <p><strong>Abonado:</strong> ${Number(sale.amountPaid).toLocaleString()}</p>
@@ -681,7 +703,7 @@ function renderSaleDocumentZpl(sale: Awaited<ReturnType<PrismaSalesRepository["g
   return `^XA
 ^PW800
 ^LL700
-^FO40,30^A0N,32,32^FD${mode === "sale" ? "VENTA" : "ORDEN DE TRABAJO"} COT-${sale.quoteNumber}^FS
+^FO40,30^A0N,32,32^FD${mode === "sale" ? (sale.status === "CONFIRMED" ? "ORDEN DE COMPRA" : "VENTA") : "ORDEN DE TRABAJO"} COT-${sale.quoteNumber}^FS
 ^FO40,70^A0N,24,24^FDCliente ${zplSafe(sale.customer?.fullName ?? sale.customerName ?? "-")}^FS
 ^FO40,105^A0N,24,24^FDRef ${zplSafe(sale.customer?.companyOrReference ?? sale.customerReference ?? "-")}^FS
 ${lines}
@@ -691,6 +713,97 @@ ${totals}
 
 function zplSafe(value: unknown) {
   return String(value ?? "").replace(/[\^~]/g, " ");
+}
+
+function renderCutSheetHtml(cutSheet: Awaited<ReturnType<PrismaScrapsRepository["generateCutSheet"]>>) {
+  const reuseRows = cutSheet.reuseRows.map((row, index) => `
+    <tr>
+      <td>${index + 1}</td>
+      <td>${row.skuCode}</td>
+      <td>${row.skuName}</td>
+      <td>${row.roomAreaName ?? "—"}</td>
+      <td>${row.pieceIndex}/${row.pieceTotal}</td>
+      <td>${row.requestedWidthM} x ${row.requestedHeightM}</td>
+      <td>${row.labelCode}</td>
+      <td>${row.scrapWidthM} x ${row.scrapHeightM}</td>
+      <td>${row.locationCode ?? "—"}</td>
+      <td>${row.stateLabel}</td>
+    </tr>
+  `).join("");
+
+  const cutRows = cutSheet.cutRows.map((row, index) => `
+    <tr>
+      <td>${index + 1}</td>
+      <td>${row.skuCode}</td>
+      <td>${row.skuName}</td>
+      <td>${row.roomAreaName ?? "—"}</td>
+      <td>${row.pieceIndex}/${row.pieceTotal}</td>
+      <td>${row.requestedWidthM} x ${row.requestedHeightM}</td>
+      <td>${row.reason}</td>
+    </tr>
+  `).join("");
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Hoja de corte ${cutSheet.quoteCode}</title>
+<style>
+  @page { size: A4; margin: 12mm; }
+  body { font-family: Arial, sans-serif; color: #111; }
+  h1, h2, p { margin: 0 0 8px 0; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  th, td { border: 1px solid #ccc; padding: 8px; font-size: 12px; vertical-align: top; }
+  .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+  .meta-card { border: 1px solid #ddd; padding: 10px; }
+  .disclaimer { margin: 10px 0; padding: 10px; border: 1px solid #e5c07b; background: #fff8e8; }
+  .section { margin-top: 18px; }
+</style>
+</head>
+<body>
+  <h1>Hoja de corte ${cutSheet.quoteCode}</h1>
+  <div class="meta">
+    <div class="meta-card">
+      <p><strong>Sucursal:</strong> ${cutSheet.branchName}</p>
+      <p><strong>Cliente:</strong> ${cutSheet.customerName}</p>
+      <p><strong>Referencia:</strong> ${cutSheet.customerReference}</p>
+    </div>
+    <div class="meta-card">
+      <p><strong>Fecha:</strong> ${cutSheet.generatedAt.slice(0, 10)}</p>
+      <p><strong>Modo:</strong> ${cutSheet.shouldReserve ? "Reservando retazos sugeridos" : "Solo guía"}</p>
+      <p><strong>Reutilizar:</strong> ${cutSheet.reuseRows.length}</p>
+      <p><strong>Cortar:</strong> ${cutSheet.cutRows.length}</p>
+    </div>
+  </div>
+  ${cutSheet.isGuideOnly ? `<div class="disclaimer"><strong>Sugerencias no reservadas.</strong> Estos retazos podrían no estar disponibles al momento del retiro.</div>` : ""}
+  <div class="section">
+    <h2>Retazos a reutilizar</h2>
+    ${cutSheet.reuseRows.length > 0 ? `
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>SKU</th><th>Tela</th><th>Ambiente</th><th>Pieza</th><th>Medida</th><th>Etiqueta</th><th>Retazo</th><th>Ubicación</th><th>Estado</th>
+          </tr>
+        </thead>
+        <tbody>${reuseRows}</tbody>
+      </table>
+    ` : `<p>Sin retazos sugeridos para reutilizar.</p>`}
+  </div>
+  <div class="section">
+    <h2>Piezas a cortar</h2>
+    ${cutSheet.cutRows.length > 0 ? `
+      <table>
+        <thead>
+          <tr>
+            <th>#</th><th>SKU</th><th>Tela</th><th>Ambiente</th><th>Pieza</th><th>Medida</th><th>Instrucción</th>
+          </tr>
+        </thead>
+        <tbody>${cutRows}</tbody>
+      </table>
+    ` : `<p>No hay piezas pendientes de corte nuevo.</p>`}
+  </div>
+</body>
+</html>`;
 }
 
 function renderPickListHtml(

@@ -18,6 +18,8 @@ const FLOW_RULES_AUDIT_ID = "00000000-0000-0000-0000-000000000001";
 const CUT_SCRAP_LOOKUP_AUDIT_ID = "00000000-0000-0000-0000-000000000056";
 const SOFT_HOLD_POLICY_KEY = "scrap_soft_hold_policy";
 const SOFT_HOLD_AUDIT_ID = "00000000-0000-0000-0000-000000000058";
+const CUT_SHEET_POLICY_KEY = "cut_sheet_policy";
+const CUT_SHEET_POLICY_AUDIT_ID = "00000000-0000-0000-0000-000000000064";
 
 export type CutScrapLookupMode = "OFF" | "MANUAL" | "AUTO_SUGGEST" | "REQUIRE_DECISION";
 export type CutScrapLookupScope = "CURRENT_LINE" | "ENTIRE_ORDER";
@@ -45,11 +47,23 @@ export type SoftHoldPolicy = {
   maxMinutes: number;
 };
 
+export type CutSheetPolicyMode = "ENABLED_WITH_PROMPT" | "GUIDE_ONLY" | "DISABLED";
+
+export type CutSheetPolicy = {
+  mode: CutSheetPolicyMode;
+};
+
 const DEFAULT_SOFT_HOLD_POLICY: SoftHoldPolicy = {
   enabled: false,
   defaultMinutes: 15,
   maxMinutes: 60
 };
+
+const DEFAULT_CUT_SHEET_POLICY: CutSheetPolicy = {
+  mode: "ENABLED_WITH_PROMPT"
+};
+
+const VALID_CUT_SHEET_MODES: CutSheetPolicyMode[] = ["ENABLED_WITH_PROMPT", "GUIDE_ONLY", "DISABLED"];
 
 export type ScrapRequiredAtStage = "NONE" | "AT_CUT" | "AT_SALE_CLOSE";
 
@@ -201,6 +215,40 @@ export class PrismaSettingsRepository {
     return updated;
   }
 
+  async getCutSheetPolicy(): Promise<CutSheetPolicy> {
+    const setting = await prismaClient.systemSetting.findUnique({ where: { key: CUT_SHEET_POLICY_KEY } });
+    if (!setting) return DEFAULT_CUT_SHEET_POLICY;
+    return parseCutSheetPolicy(setting.valueJson);
+  }
+
+  async updateCutSheetPolicy(input: Partial<CutSheetPolicy>, updatedByEmail: string): Promise<CutSheetPolicy> {
+    const user = await prismaClient.appUser.findUnique({ where: { email: updatedByEmail } });
+    if (!user) throw new Error("Usuario no encontrado.");
+
+    const current = await this.getCutSheetPolicy();
+    const updated = parseCutSheetPolicy({
+      mode: input.mode ?? current.mode
+    });
+
+    const existing = await prismaClient.systemSetting.findUnique({ where: { key: CUT_SHEET_POLICY_KEY } });
+    await prismaClient.systemSetting.upsert({
+      where: { key: CUT_SHEET_POLICY_KEY },
+      update: { valueJson: updated, updatedBy: user.id, updatedAt: new Date() },
+      create: { key: CUT_SHEET_POLICY_KEY, valueJson: updated, updatedBy: user.id, updatedAt: new Date() }
+    });
+
+    await this.auditRepo.log({
+      actorUserId: user.id,
+      entityType: "system_setting",
+      entityId: CUT_SHEET_POLICY_AUDIT_ID,
+      action: AuditAction.UPDATE,
+      beforeJson: existing ? (existing.valueJson as object) : null,
+      afterJson: updated
+    });
+
+    return updated;
+  }
+
   private async getLegacyDefaultScrapPolicy(): Promise<ScrapPolicy> {
     const widthThreshold = await this.resolveLegacyWidthThresholdCm();
     const legacyFlowRules = await prismaClient.systemSetting.findUnique({ where: { key: FLOW_RULES_KEY } });
@@ -246,4 +294,12 @@ function parseSoftHoldPolicy(raw: unknown): SoftHoldPolicy {
   const defaultMinutes = Math.max(1, Math.min(120, defaultMinutesRaw));
   const maxMinutes = Math.max(defaultMinutes, Math.min(120, maxMinutesRaw));
   return { enabled, defaultMinutes, maxMinutes };
+}
+
+function parseCutSheetPolicy(raw: unknown): CutSheetPolicy {
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const mode = VALID_CUT_SHEET_MODES.includes(obj.mode as CutSheetPolicyMode)
+    ? (obj.mode as CutSheetPolicyMode)
+    : DEFAULT_CUT_SHEET_POLICY.mode;
+  return { mode };
 }

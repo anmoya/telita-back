@@ -108,6 +108,13 @@ export class PricingController {
         };
       }).filter(Boolean);
 
+      const commercialAdjPct = Math.min(Math.max(body.commercialAdjustmentPct ?? 0, 0), 100);
+      const commercialAdj = Math.round(batch.subtotalAmount * (commercialAdjPct / 100) * 100) / 100;
+      const installation = Math.max(body.installationAmount ?? 0, 0);
+      const taxableSubtotal = batch.subtotalAmount + commercialAdj + installation;
+      const adjustedTax = Math.round(taxableSubtotal * 0.19 * 100) / 100;
+      const adjustedTotal = roundClpCash(taxableSubtotal + adjustedTax);
+
       const result: Record<string, unknown> = {
         header: {
           branchName: branch?.name ?? body.branchCode,
@@ -121,8 +128,11 @@ export class PricingController {
         lines,
         totals: {
           subtotal: batch.subtotalAmount,
-          tax: batch.taxAmount,
-          total: batch.totalAmount,
+          commercialAdjustmentPct: commercialAdjPct,
+          commercialAdjustmentAmount: commercialAdj,
+          installationAmount: installation,
+          tax: adjustedTax,
+          total: adjustedTotal,
           currencyCode: batch.currencyCode
         },
         hasErrors: batch.hasErrors
@@ -150,4 +160,11 @@ export class PricingController {
     requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     return this.priceRepo.listQuotes(branchCode);
   }
+}
+
+function roundClpCash(value: number): number {
+  const integer = Math.round(value);
+  const remainder = integer % 10;
+  const base = integer - remainder;
+  return remainder <= 5 ? base : base + 10;
 }
