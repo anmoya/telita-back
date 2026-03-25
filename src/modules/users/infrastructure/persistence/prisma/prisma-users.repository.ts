@@ -1,6 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { AuditAction } from "@prisma/client";
-import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
+import { AuditAction, PrismaClient } from "@prisma/client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 import type { PasswordHasherPort } from "../../../../../shared/application/ports/password-hasher.port";
 import type {
@@ -47,7 +46,10 @@ const userSelect = {
 
 @Injectable()
 export class PrismaUsersRepository implements UserRepositoryPort {
-  private readonly auditRepo = new PrismaAuditRepository();
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly auditRepo: PrismaAuditRepository
+  ) {}
 
   async listByBranch(branchCode: string, actorRole: UserRole, actorBranchCode: string): Promise<UserDto[]> {
     const where =
@@ -55,7 +57,7 @@ export class PrismaUsersRepository implements UserRepositoryPort {
         ? {}
         : { branch: { code: actorBranchCode } };
 
-    const users = await prismaClient.appUser.findMany({
+    const users = await this.prisma.appUser.findMany({
       where,
       select: userSelect,
       orderBy: [{ role: "asc" }, { fullName: "asc" }]
@@ -65,7 +67,7 @@ export class PrismaUsersRepository implements UserRepositoryPort {
   }
 
   async findById(id: string): Promise<UserDto | null> {
-    const user = await prismaClient.appUser.findUnique({
+    const user = await this.prisma.appUser.findUnique({
       where: { id },
       select: userSelect
     });
@@ -73,7 +75,7 @@ export class PrismaUsersRepository implements UserRepositoryPort {
   }
 
   async findByEmail(email: string): Promise<UserDto | null> {
-    const user = await prismaClient.appUser.findUnique({
+    const user = await this.prisma.appUser.findUnique({
       where: { email },
       select: userSelect
     });
@@ -81,15 +83,15 @@ export class PrismaUsersRepository implements UserRepositoryPort {
   }
 
   async create(input: CreateUserInput, hasher: PasswordHasherPort): Promise<UserDto> {
-    const existing = await prismaClient.appUser.findUnique({ where: { email: input.email } });
+    const existing = await this.prisma.appUser.findUnique({ where: { email: input.email } });
     if (existing) throw new Error(`Email ya registrado: ${input.email}`);
 
-    const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
+    const branch = await this.prisma.branch.findUnique({ where: { code: input.branchCode } });
     if (!branch) throw new Error(`Sucursal no encontrada: ${input.branchCode}`);
 
     const passwordHash = await hasher.hash(input.password);
 
-    const user = await prismaClient.appUser.create({
+    const user = await this.prisma.appUser.create({
       data: {
         branchId: branch.id,
         email: input.email,
@@ -114,7 +116,7 @@ export class PrismaUsersRepository implements UserRepositoryPort {
   }
 
   async update(id: string, input: UpdateUserInput): Promise<UserDto> {
-    const existing = await prismaClient.appUser.findUnique({
+    const existing = await this.prisma.appUser.findUnique({
       where: { id },
       include: { branch: { select: { code: true } } }
     });
@@ -124,12 +126,12 @@ export class PrismaUsersRepository implements UserRepositoryPort {
 
     let branchId = existing.branchId;
     if (input.branchCode) {
-      const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
+      const branch = await this.prisma.branch.findUnique({ where: { code: input.branchCode } });
       if (!branch) throw new Error(`Sucursal no encontrada: ${input.branchCode}`);
       branchId = branch.id;
     }
 
-    const user = await prismaClient.appUser.update({
+    const user = await this.prisma.appUser.update({
       where: { id },
       data: {
         fullName: input.fullName ?? existing.fullName,
@@ -153,7 +155,7 @@ export class PrismaUsersRepository implements UserRepositoryPort {
   }
 
   async changePassword(id: string, input: ChangePasswordInput, hasher: PasswordHasherPort): Promise<void> {
-    const user = await prismaClient.appUser.findUnique({
+    const user = await this.prisma.appUser.findUnique({
       where: { id },
       select: { id: true, passwordHash: true, branchId: true }
     });
@@ -172,7 +174,7 @@ export class PrismaUsersRepository implements UserRepositoryPort {
     }
 
     const newHash = await hasher.hash(input.newPassword);
-    await prismaClient.appUser.update({ where: { id }, data: { passwordHash: newHash } });
+    await this.prisma.appUser.update({ where: { id }, data: { passwordHash: newHash } });
 
     await this.auditRepo.log({
       branchId: user.branchId,
@@ -185,7 +187,7 @@ export class PrismaUsersRepository implements UserRepositoryPort {
   }
 
   async setStatus(id: string, isActive: boolean, actorId: string, actorRole: UserRole): Promise<UserDto> {
-    const user = await prismaClient.appUser.findUnique({
+    const user = await this.prisma.appUser.findUnique({
       where: { id },
       include: { branch: { select: { code: true } } }
     });
@@ -198,7 +200,7 @@ export class PrismaUsersRepository implements UserRepositoryPort {
       }
     }
 
-    const updated = await prismaClient.appUser.update({
+    const updated = await this.prisma.appUser.update({
       where: { id },
       data: { isActive },
       select: userSelect
@@ -218,18 +220,18 @@ export class PrismaUsersRepository implements UserRepositoryPort {
   }
 
   async countActiveSuperadmins(): Promise<number> {
-    return prismaClient.appUser.count({ where: { role: "superadmin", isActive: true } });
+    return this.prisma.appUser.count({ where: { role: "superadmin", isActive: true } });
   }
 
   async markOnboardingComplete(userId: string): Promise<void> {
-    await prismaClient.appUser.update({
+    await this.prisma.appUser.update({
       where: { id: userId },
       data: { onboardingCompletedAt: new Date() }
     });
   }
 
   async getBranchCodeByUserId(userId: string): Promise<string> {
-    const user = await prismaClient.appUser.findUnique({
+    const user = await this.prisma.appUser.findUnique({
       where: { id: userId },
       include: { branch: { select: { code: true } } }
     });

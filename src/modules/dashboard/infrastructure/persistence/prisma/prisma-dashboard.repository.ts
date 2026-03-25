@@ -1,9 +1,12 @@
-import { ScrapStatus, SaleStatus } from "@prisma/client";
-import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
+import { Injectable } from "@nestjs/common";
+import { PrismaClient, ScrapStatus, SaleStatus } from "@prisma/client";
 
+@Injectable()
 export class PrismaDashboardRepository {
+  constructor(private readonly prisma: PrismaClient) {}
+
   async getKpis(input: { branchCode: string; date?: string }) {
-    const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
+    const branch = await this.prisma.branch.findUnique({ where: { code: input.branchCode } });
     if (!branch) throw new Error("Sucursal no encontrada.");
 
     const target = input.date ? new Date(`${input.date}T00:00:00`) : new Date();
@@ -14,15 +17,15 @@ export class PrismaDashboardRepository {
 
     const [quotesCreatedToday, salesConfirmedToday, salesCanceledToday, pendingScraps, labelsPrintedToday] =
       await Promise.all([
-        prismaClient.quote.count({ where: { branchId: branch.id, createdAt: { gte: from, lt: to } } }),
-        prismaClient.sale.count({
+        this.prisma.quote.count({ where: { branchId: branch.id, createdAt: { gte: from, lt: to } } }),
+        this.prisma.sale.count({
           where: { branchId: branch.id, status: SaleStatus.CONFIRMED, createdAt: { gte: from, lt: to } }
         }),
-        prismaClient.sale.count({
+        this.prisma.sale.count({
           where: { branchId: branch.id, status: SaleStatus.CANCELED, createdAt: { gte: from, lt: to } }
         }),
-        prismaClient.scrap.count({ where: { branchId: branch.id, status: ScrapStatus.PENDING_INBOUND } }),
-        prismaClient.labelPrintEvent.count({
+        this.prisma.scrap.count({ where: { branchId: branch.id, status: ScrapStatus.PENDING_INBOUND } }),
+        this.prisma.labelPrintEvent.count({
           where: {
             printedAt: { gte: from, lt: to },
             label: { branchId: branch.id }
@@ -42,7 +45,7 @@ export class PrismaDashboardRepository {
   }
 
   async getPendingScraps(input: { branchCode: string; limit?: number }) {
-    return prismaClient.scrap.findMany({
+    return this.prisma.scrap.findMany({
       where: {
         branch: { code: input.branchCode },
         status: ScrapStatus.PENDING_INBOUND

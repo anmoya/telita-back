@@ -1,4 +1,6 @@
-import type { PriceListRepositoryPort } from "../ports/price-list-repository.port";
+import { Inject, Injectable } from "@nestjs/common";
+import { AppValidationError } from "../../../../shared/application/errors/app-error";
+import { PRICE_LIST_REPOSITORY, type PriceListRepositoryPort } from "../ports/price-list-repository.port";
 
 export interface CreatePriceListInput {
   branchCode: string;
@@ -12,13 +14,17 @@ export interface CreatePriceListOutput {
   id: string;
 }
 
+@Injectable()
 export class CreatePriceListUseCase {
-  constructor(private readonly priceListRepo: PriceListRepositoryPort) {}
+  constructor(
+    @Inject(PRICE_LIST_REPOSITORY)
+    private readonly priceListRepo: PriceListRepositoryPort
+  ) {}
 
   async execute(input: CreatePriceListInput): Promise<CreatePriceListOutput> {
     // Validate: name required, unique per branch (handled by DB)
     if (!input.name || input.name.trim().length === 0) {
-      throw new Error("El nombre es obligatorio");
+      throw new AppValidationError("El nombre es obligatorio");
     }
 
     // Validate: basePrice > 0 handled in items

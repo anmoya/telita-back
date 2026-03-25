@@ -4,16 +4,23 @@ import {
   Controller,
   ForbiddenException,
   Get,
-  Headers,
   Param,
   Patch,
   Post,
   Put,
   Query
 } from "@nestjs/common";
-import { PrismaUsersRepository } from "../../infrastructure/persistence/prisma/prisma-users.repository";
-import { BcryptPasswordHasher } from "../../../../shared/infrastructure/auth/bcrypt-password-hasher";
-import { requireAuth, requireAnyRole } from "../../../../shared/presentation/auth";
+import type { AuthTokenPayload } from "../../../../shared/infrastructure/auth/token.service";
+import { Authenticated } from "../../../../shared/presentation/authenticated.decorator";
+import { CurrentAuth } from "../../../../shared/presentation/current-auth.decorator";
+import { Roles } from "../../../../shared/presentation/roles.decorator";
+import { ChangeUserPasswordUseCase } from "../../application/use-cases/change-user-password.use-case";
+import { CreateUserUseCase } from "../../application/use-cases/create-user.use-case";
+import { GetUserByIdUseCase } from "../../application/use-cases/get-user-by-id.use-case";
+import { ListUsersUseCase } from "../../application/use-cases/list-users.use-case";
+import { MarkUserOnboardingCompleteUseCase } from "../../application/use-cases/mark-user-onboarding-complete.use-case";
+import { SetUserStatusUseCase } from "../../application/use-cases/set-user-status.use-case";
+import { UpdateUserUseCase } from "../../application/use-cases/update-user.use-case";
 import {
   ChangePasswordDto,
   CreateUserDto,
@@ -21,20 +28,25 @@ import {
   UpdateUserStatusDto
 } from "../dto/users.dto";
 
+@Authenticated()
 @Controller("users")
 export class UsersController {
   constructor(
-    private readonly repo: PrismaUsersRepository,
-    private readonly hasher: BcryptPasswordHasher
+    private readonly listUsersUseCase: ListUsersUseCase,
+    private readonly getUserByIdUseCase: GetUserByIdUseCase,
+    private readonly createUserUseCase: CreateUserUseCase,
+    private readonly updateUserUseCase: UpdateUserUseCase,
+    private readonly changeUserPasswordUseCase: ChangeUserPasswordUseCase,
+    private readonly markUserOnboardingCompleteUseCase: MarkUserOnboardingCompleteUseCase,
+    private readonly setUserStatusUseCase: SetUserStatusUseCase
   ) {}
 
   /** GET /v1/users?branchCode= */
   @Get()
-  async list(@Query("branchCode") branchCode: string, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
+  @Roles("superadmin", "admin")
+  async list(@Query("branchCode") branchCode: string, @CurrentAuth() auth: AuthTokenPayload) {
     try {
-      return await this.repo.listByBranch(branchCode ?? "", auth.role, await this.getActorBranchCode(auth.sub));
+      return await this.listUsersUseCase.execute(branchCode ?? "", auth.role, auth.sub);
     } catch (error) {
       throw new BadRequestException(getErrorMessage(error));
     }
@@ -42,21 +54,21 @@ export class UsersController {
 
   /** GET /v1/users/:id */
   @Get(":id")
-  async getById(@Param("id") id: string, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
+  async getById(@Param("id") id: string, @CurrentAuth() auth: AuthTokenPayload) {
     if (auth.sub !== id) {
-      requireAnyRole(auth, ["superadmin", "admin"]);
+      if (auth.role !== "superadmin" && auth.role !== "admin") {
+        throw new ForbiddenException("Insufficient role permissions.");
+      }
     }
-    const user = await this.repo.findById(id);
+    const user = await this.getUserByIdUseCase.execute(id);
     if (!user) throw new BadRequestException("Usuario no encontrado.");
     return user;
   }
 
   /** POST /v1/users */
   @Post()
-  async create(@Body() body: CreateUserDto, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
+  @Roles("superadmin", "admin")
+  async create(@Body() body: CreateUserDto, @CurrentAuth() auth: AuthTokenPayload) {
 
     if (!body.password || body.password.length < 8) {
       throw new BadRequestException("Contraseña debe tener al menos 8 caracteres.");
@@ -67,7 +79,7 @@ export class UsersController {
     }
 
     try {
-      const user = await this.repo.create({ ...body, actorId: auth.sub }, this.hasher);
+      const user = await this.createUserUseCase.execute({ ...body, actorId: auth.sub });
       return user;
     } catch (error) {
       throw new BadRequestException(getErrorMessage(error));
@@ -79,13 +91,14 @@ export class UsersController {
   async update(
     @Param("id") id: string,
     @Body() body: UpdateUserDto,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
     const isSelf = auth.sub === id;
 
     if (!isSelf) {
-      requireAnyRole(auth, ["superadmin", "admin"]);
+      if (auth.role !== "superadmin" && auth.role !== "admin") {
+        throw new ForbiddenException("Insufficient role permissions.");
+      }
     }
 
     if (isSelf && auth.role === "operador") {
@@ -99,7 +112,7 @@ export class UsersController {
     }
 
     try {
-      return await this.repo.update(id, { ...body, actorId: auth.sub });
+      return await this.updateUserUseCase.execute(id, { ...body, actorId: auth.sub });
     } catch (error) {
       throw new BadRequestException(getErrorMessage(error));
     }
@@ -110,14 +123,12 @@ export class UsersController {
   async changePassword(
     @Param("id") id: string,
     @Body() body: ChangePasswordDto,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
     try {
-      await this.repo.changePassword(
+      await this.changeUserPasswordUseCase.execute(
         id,
-        { currentPassword: body.currentPassword, newPassword: body.newPassword, actorId: auth.sub, actorRole: auth.role },
-        this.hasher
+        { currentPassword: body.currentPassword, newPassword: body.newPassword, actorId: auth.sub, actorRole: auth.role }
       );
       return { ok: true };
     } catch (error) {
@@ -127,31 +138,25 @@ export class UsersController {
 
   /** PATCH /v1/users/:id/onboarding-complete */
   @Patch(":id/onboarding-complete")
-  async markOnboarding(@Param("id") id: string, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
+  async markOnboarding(@Param("id") id: string, @CurrentAuth() auth: AuthTokenPayload) {
     if (auth.sub !== id) throw new ForbiddenException();
-    await this.repo.markOnboardingComplete(id);
+    await this.markUserOnboardingCompleteUseCase.execute(id);
     return { ok: true };
   }
 
   /** PATCH /v1/users/:id/status */
   @Patch(":id/status")
+  @Roles("superadmin", "admin")
   async setStatus(
     @Param("id") id: string,
     @Body() body: UpdateUserStatusDto,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
     try {
-      return await this.repo.setStatus(id, body.isActive, auth.sub, auth.role);
+      return await this.setUserStatusUseCase.execute(id, body.isActive, auth.sub, auth.role);
     } catch (error) {
       throw new BadRequestException(getErrorMessage(error));
     }
-  }
-
-  private async getActorBranchCode(actorId: string): Promise<string> {
-    return this.repo.getBranchCodeByUserId(actorId);
   }
 }
 

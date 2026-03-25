@@ -5,13 +5,12 @@ import {
   StatusLabelDTO,
   StatusLabelsRepositoryPort
 } from "../../../application/ports/status-labels.repository.port";
-
-const prisma = new PrismaClient();
-
 @Injectable()
 export class PrismaStatusLabelRepository implements StatusLabelsRepositoryPort {
+  constructor(private readonly prisma: PrismaClient) {}
+
   async getAllGrouped(): Promise<GroupedStatusLabels> {
-    const labels = await prisma.statusLabel.findMany({
+    const labels = await this.prisma.statusLabel.findMany({
       orderBy: [{ entityType: "asc" }, { statusCode: "asc" }]
     });
 
@@ -41,7 +40,7 @@ export class PrismaStatusLabelRepository implements StatusLabelsRepositoryPort {
   }
 
   async getByEntityType(entityType: string): Promise<StatusLabelDTO[]> {
-    const labels = await prisma.statusLabel.findMany({
+    const labels = await this.prisma.statusLabel.findMany({
       where: { entityType },
       orderBy: { statusCode: "asc" }
     });

@@ -1,10 +1,12 @@
 import { Injectable } from "@nestjs/common";
-import { prismaClient } from "../../../shared/infrastructure/persistence/prisma-client";
+import { PrismaClient } from "@prisma/client";
 
 @Injectable()
 export class PrismaAuthRepository {
+  constructor(private readonly prisma: PrismaClient) {}
+
   async findActiveUserByEmail(email: string) {
-    return prismaClient.appUser.findFirst({
+    return this.prisma.appUser.findFirst({
       where: { email, isActive: true },
       select: {
         id: true,

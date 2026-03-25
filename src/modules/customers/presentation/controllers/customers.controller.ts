@@ -1,126 +1,106 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, Param, Patch, Post, Put, Query } from "@nestjs/common";
-import { PrismaCustomersRepository, type CustomerPayload } from "../../infrastructure/persistence/prisma/prisma-customers.repository";
-import { PrismaCustomerDiscountsRepository } from "../../infrastructure/persistence/prisma/prisma-customer-discounts.repository";
-import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query } from "@nestjs/common";
+import type { AuthTokenPayload } from "../../../../shared/infrastructure/auth/token.service";
+import { Authenticated } from "../../../../shared/presentation/authenticated.decorator";
+import { CurrentAuth } from "../../../../shared/presentation/current-auth.decorator";
+import { Roles } from "../../../../shared/presentation/roles.decorator";
+import { CreateCustomerDiscountUseCase } from "../../application/use-cases/create-customer-discount.use-case";
+import { CreateCustomerUseCase } from "../../application/use-cases/create-customer.use-case";
+import { DeactivateCustomerDiscountUseCase } from "../../application/use-cases/deactivate-customer-discount.use-case";
+import { GetCustomerByIdUseCase } from "../../application/use-cases/get-customer-by-id.use-case";
+import { ListCustomerDiscountsUseCase } from "../../application/use-cases/list-customer-discounts.use-case";
+import { ListCustomersUseCase } from "../../application/use-cases/list-customers.use-case";
+import { SetCustomerStatusUseCase } from "../../application/use-cases/set-customer-status.use-case";
+import { UpdateCustomerDiscountUseCase } from "../../application/use-cases/update-customer-discount.use-case";
+import { UpdateCustomerUseCase } from "../../application/use-cases/update-customer.use-case";
+import type { CustomerPayload } from "../../infrastructure/persistence/prisma/prisma-customers.repository";
 
+@Authenticated("superadmin", "admin", "operador")
 @Controller("customers")
 export class CustomersController {
-  private readonly repo = new PrismaCustomersRepository();
-  private readonly discountsRepo = new PrismaCustomerDiscountsRepository();
+  constructor(
+    private readonly listCustomersUseCase: ListCustomersUseCase,
+    private readonly getCustomerByIdUseCase: GetCustomerByIdUseCase,
+    private readonly createCustomerUseCase: CreateCustomerUseCase,
+    private readonly updateCustomerUseCase: UpdateCustomerUseCase,
+    private readonly setCustomerStatusUseCase: SetCustomerStatusUseCase,
+    private readonly listCustomerDiscountsUseCase: ListCustomerDiscountsUseCase,
+    private readonly createCustomerDiscountUseCase: CreateCustomerDiscountUseCase,
+    private readonly updateCustomerDiscountUseCase: UpdateCustomerDiscountUseCase,
+    private readonly deactivateCustomerDiscountUseCase: DeactivateCustomerDiscountUseCase
+  ) {}
 
   @Get()
   async list(
     @Query("branchCode") branchCode = "MAIN",
     @Query("q") q?: string,
-    @Query("isActive") isActive?: string,
-    @Headers("authorization") authorization?: string
+    @Query("isActive") isActive?: string
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const rows = await this.repo.list({
-        branchCode,
-        q,
-        isActive: isActive === undefined ? undefined : isActive === "true"
-      });
-      return rows.map(serializeCustomer);
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    const rows = await this.listCustomersUseCase.execute({
+      branchCode,
+      q,
+      isActive: isActive === undefined ? undefined : isActive === "true"
+    });
+    return rows.map(serializeCustomer);
   }
 
   @Get(":id")
-  async getById(@Param("id") id: string, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const customer = await this.repo.findById(id);
-      if (!customer) throw new Error("Cliente no encontrado.");
-      return {
-        ...serializeCustomer(customer),
-        branchCode: customer.branch.code,
-        branchName: customer.branch.name
-      };
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+  async getById(@Param("id") id: string) {
+    const customer = await this.getCustomerByIdUseCase.execute(id);
+    return {
+      ...serializeCustomer(customer),
+      branchCode: customer.branch.code,
+      branchName: customer.branch.name
+    };
   }
 
   @Post()
-  async create(@Body() body: CustomerPayload, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
-    try {
-      return serializeCustomer(await this.repo.create(body, auth.sub));
-    } catch (error) {
-      const msg = getErrorMessage(error);
-      if (msg.includes("Ya existe un cliente con este RUT")) throw new ConflictException(msg);
-      throw new BadRequestException(msg);
-    }
+  @Roles("superadmin", "admin")
+  async create(@Body() body: CustomerPayload, @CurrentAuth() auth: AuthTokenPayload) {
+    return serializeCustomer(await this.createCustomerUseCase.execute(body, auth.sub));
   }
 
   @Put(":id")
+  @Roles("superadmin", "admin")
   async update(
     @Param("id") id: string,
     @Body() body: Partial<Omit<CustomerPayload, "branchCode">>,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
-    try {
-      return serializeCustomer(
-        await this.repo.update(id, {
-          fullName: body.fullName,
-          rut: body.rut,
-          phone: body.phone,
-          email: body.email,
-          companyOrReference: body.companyOrReference,
-          preferredPriceListName: body.preferredPriceListName,
-          discountCode: body.discountCode,
-          discountPct: body.discountPct,
-          notes: body.notes
-        }, auth.sub)
-      );
-    } catch (error) {
-      const msg = getErrorMessage(error);
-      if (msg.includes("Ya existe un cliente con este RUT")) throw new ConflictException(msg);
-      throw new BadRequestException(msg);
-    }
+    return serializeCustomer(
+      await this.updateCustomerUseCase.execute(id, {
+        fullName: body.fullName,
+        rut: body.rut,
+        phone: body.phone,
+        email: body.email,
+        companyOrReference: body.companyOrReference,
+        preferredPriceListName: body.preferredPriceListName,
+        discountCode: body.discountCode,
+        discountPct: body.discountPct,
+        notes: body.notes
+      }, auth.sub)
+    );
   }
 
   @Patch(":id/status")
+  @Roles("superadmin", "admin")
   async setStatus(
     @Param("id") id: string,
     @Body() body: { isActive: boolean },
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
-    try {
-      return serializeCustomer(await this.repo.setStatus(id, body.isActive, auth.sub));
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    return serializeCustomer(await this.setCustomerStatusUseCase.execute(id, body.isActive, auth.sub));
   }
 
   // --- Customer Discounts ---
 
   @Get(":id/discounts")
-  async listDiscounts(
-    @Param("id") id: string,
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const rows = await this.discountsRepo.listByCustomer(id);
-      return rows.map(serializeDiscount);
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+  async listDiscounts(@Param("id") id: string) {
+    const rows = await this.listCustomerDiscountsUseCase.execute(id);
+    return rows.map(serializeDiscount);
   }
 
   @Post(":id/discounts")
+  @Roles("superadmin", "admin")
   async createDiscount(
     @Param("id") customerId: string,
     @Body() body: {
@@ -130,27 +110,22 @@ export class CustomersController {
       validFrom: string;
       validTo?: string;
     },
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
-    try {
-      const row = await this.discountsRepo.create({
-        customerId,
-        createdByEmail: auth.email,
-        discountCode: body.discountCode,
-        discountPct: body.discountPct,
-        reason: body.reason,
-        validFrom: body.validFrom,
-        validTo: body.validTo
-      });
-      return serializeDiscount(row);
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    const row = await this.createCustomerDiscountUseCase.execute({
+      customerId,
+      createdByEmail: auth.email,
+      discountCode: body.discountCode,
+      discountPct: body.discountPct,
+      reason: body.reason,
+      validFrom: body.validFrom,
+      validTo: body.validTo
+    });
+    return serializeDiscount(row);
   }
 
   @Put(":id/discounts/:discountId")
+  @Roles("superadmin", "admin")
   async updateDiscount(
     @Param("id") _customerId: string,
     @Param("discountId") discountId: string,
@@ -160,33 +135,20 @@ export class CustomersController {
       reason?: string;
       validFrom?: string;
       validTo?: string | null;
-    },
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
-    try {
-      const row = await this.discountsRepo.update(discountId, body);
-      return serializeDiscount(row);
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
     }
+  ) {
+    const row = await this.updateCustomerDiscountUseCase.execute(discountId, body);
+    return serializeDiscount(row);
   }
 
   @Delete(":id/discounts/:discountId")
+  @Roles("superadmin", "admin")
   async deactivateDiscount(
     @Param("id") _customerId: string,
-    @Param("discountId") discountId: string,
-    @Headers("authorization") authorization?: string
+    @Param("discountId") discountId: string
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
-    try {
-      await this.discountsRepo.deactivate(discountId);
-      return { ok: true };
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    await this.deactivateCustomerDiscountUseCase.execute(discountId);
+    return { ok: true };
   }
 }
 
@@ -261,8 +223,4 @@ function serializeDiscount(d: {
     createdByName: d.createdByUser?.fullName ?? null,
     createdByEmail: d.createdByUser?.email ?? null
   };
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

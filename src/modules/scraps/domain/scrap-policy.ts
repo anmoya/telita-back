@@ -1,3 +1,5 @@
+import { AppValidationError } from "../../../shared/application/errors/app-error";
+
 export type ScrapVariable =
   | "scrap_width_cm"
   | "scrap_height_cm"
@@ -68,7 +70,7 @@ export function parseScrapPolicy(input: unknown): ScrapPolicy {
 export function evaluateScrapRule(rule: ScrapClassificationRule, context: ScrapRuleContext): boolean {
   const result = evaluateNode(rule.expression, context);
   if (typeof result !== "boolean") {
-    throw new Error("La regla de retazo debe resolver a boolean.");
+    throw new AppValidationError("La regla de retazo debe resolver a boolean.");
   }
   return result;
 }
@@ -102,7 +104,7 @@ function parseRule(input: unknown): ScrapClassificationRule {
   }
   const raw = input as Record<string, unknown>;
   if (raw.version !== 1 || raw.kind !== "predicate") {
-    throw new Error("La regla de retazo debe usar version 1 y kind predicate.");
+    throw new AppValidationError("La regla de retazo debe usar version 1 y kind predicate.");
   }
   const expression = parseExpression(raw.expression);
   const dryRun = evaluateNode(expression, {
@@ -114,7 +116,7 @@ function parseRule(input: unknown): ScrapClassificationRule {
     sku_thickness_cm: 0
   });
   if (typeof dryRun !== "boolean") {
-    throw new Error("La expresion de retazo debe evaluar a boolean.");
+    throw new AppValidationError("La expresion de retazo debe evaluar a boolean.");
   }
   return {
     version: 1,
@@ -128,25 +130,25 @@ function parseLocationPolicy(input: unknown): ScrapLocationPolicy {
     return input;
   }
   if (input == null) return DEFAULT_SCRAP_POLICY.locationPolicy;
-  throw new Error("locationPolicy invalida.");
+  throw new AppValidationError("locationPolicy invalida.");
 }
 
 function parseExpression(input: unknown): ScrapExpression {
   if (!input || typeof input !== "object") {
-    throw new Error("Expresion de retazo invalida.");
+    throw new AppValidationError("Expresion de retazo invalida.");
   }
   const raw = input as Record<string, unknown>;
 
   if ("const" in raw) {
     if (typeof raw.const !== "number" || !Number.isFinite(raw.const)) {
-      throw new Error("const debe ser numerico.");
+      throw new AppValidationError("const debe ser numerico.");
     }
     return { const: raw.const };
   }
 
   if ("var" in raw) {
     if (typeof raw.var !== "string" || !ALLOWED_VARIABLES.has(raw.var as ScrapVariable)) {
-      throw new Error("Variable de retazo invalida.");
+      throw new AppValidationError("Variable de retazo invalida.");
     }
     return { var: raw.var as ScrapVariable };
   }
@@ -156,7 +158,7 @@ function parseExpression(input: unknown): ScrapExpression {
   }
 
   if (typeof raw.op !== "string") {
-    throw new Error("Operacion de retazo invalida.");
+    throw new AppValidationError("Operacion de retazo invalida.");
   }
 
   if (NUMERIC_OPS.has(raw.op) || COMPARISON_OPS.has(raw.op) || BOOLEAN_OPS.has(raw.op)) {
@@ -178,7 +180,7 @@ function parseExpression(input: unknown): ScrapExpression {
     };
   }
 
-  throw new Error("Operacion de retazo no soportada.");
+  throw new AppValidationError("Operacion de retazo no soportada.");
 }
 
 function evaluateNode(node: ScrapExpression, context: ScrapRuleContext): boolean | number {
@@ -187,7 +189,7 @@ function evaluateNode(node: ScrapExpression, context: ScrapRuleContext): boolean
 
   if (node.op === "not") {
     const value = evaluateNode(node.value, context);
-    if (typeof value !== "boolean") throw new Error("not requiere boolean.");
+    if (typeof value !== "boolean") throw new AppValidationError("not requiere boolean.");
     return !value;
   }
 
@@ -196,7 +198,7 @@ function evaluateNode(node: ScrapExpression, context: ScrapRuleContext): boolean
 
   if (NUMERIC_OPS.has(node.op)) {
     if (typeof left !== "number" || typeof right !== "number") {
-      throw new Error(`${node.op} requiere operandos numericos.`);
+      throw new AppValidationError(`${node.op} requiere operandos numericos.`);
     }
     if (node.op === "add") return left + right;
     if (node.op === "sub") return left - right;
@@ -206,7 +208,7 @@ function evaluateNode(node: ScrapExpression, context: ScrapRuleContext): boolean
 
   if (COMPARISON_OPS.has(node.op)) {
     if (typeof left !== "number" || typeof right !== "number") {
-      throw new Error(`${node.op} requiere operandos numericos.`);
+      throw new AppValidationError(`${node.op} requiere operandos numericos.`);
     }
     if (node.op === "gt") return left > right;
     if (node.op === "gte") return left >= right;
@@ -216,7 +218,7 @@ function evaluateNode(node: ScrapExpression, context: ScrapRuleContext): boolean
   }
 
   if (typeof left !== "boolean" || typeof right !== "boolean") {
-    throw new Error(`${node.op} requiere operandos booleanos.`);
+    throw new AppValidationError(`${node.op} requiere operandos booleanos.`);
   }
   return node.op === "and" ? left && right : left || right;
 }

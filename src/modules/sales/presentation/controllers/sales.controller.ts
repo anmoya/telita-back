@@ -1,7 +1,6 @@
 import {
   BadRequestException,
   Body,
-  ConflictException,
   Controller,
   Delete,
   Get,
@@ -15,12 +14,13 @@ import {
   StreamableFile,
   UnprocessableEntityException
 } from "@nestjs/common";
-import { Headers } from "@nestjs/common";
-import { PrismaSalesRepository } from "../../infrastructure/persistence/prisma/prisma-sales.repository";
-import { PrismaScrapsRepository } from "../../../scraps/infrastructure/persistence/prisma/prisma-scraps.repository";
-import { PrismaAuditRepository } from "../../../../shared/infrastructure/persistence/prisma-audit.repository";
-import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
-import { prismaClient } from "../../../../shared/infrastructure/persistence/prisma-client";
+import type { AuthTokenPayload } from "../../../../shared/infrastructure/auth/token.service";
+import { SalesOperationsService } from "../../application/services/sales-operations.service";
+import { SalesScrapWorkflowService } from "../../application/services/sales-scrap-workflow.service";
+import type { PrismaScrapsRepository } from "../../../scraps/infrastructure/persistence/prisma/prisma-scraps.repository";
+import type { PrismaSalesRepository } from "../../infrastructure/persistence/prisma/prisma-sales.repository";
+import { Authenticated } from "../../../../shared/presentation/authenticated.decorator";
+import { CurrentAuth } from "../../../../shared/presentation/current-auth.decorator";
 import {
   AllocateScrapDto,
   CommitAutoScrapAssignmentDto,
@@ -34,24 +34,19 @@ import {
   UpdateSaleCustomerDto
 } from "../dto/sales.dto";
 
+@Authenticated("superadmin", "admin", "operador")
 @Controller("sales")
 export class SalesController {
   constructor(
-    private readonly repo: PrismaSalesRepository,
-    private readonly scrapsRepo: PrismaScrapsRepository,
-    private readonly auditRepo: PrismaAuditRepository
+    private readonly salesOperations: SalesOperationsService,
+    private readonly scrapWorkflow: SalesScrapWorkflowService
   ) {}
 
   @Post("from-quote")
   @HttpCode(HttpStatus.OK)
-  async createFromQuote(
-    @Body() body: CreateSaleFromQuoteDto,
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+  async createFromQuote(@Body() body: CreateSaleFromQuoteDto, @CurrentAuth() auth: AuthTokenPayload) {
     try {
-      const result = await this.repo.createFromQuote({ ...body, createdByEmail: auth.email });
+      const result = await this.salesOperations.createFromQuote({ ...body, createdByEmail: auth.email });
       return {
         saleId: result.sale.id,
         quoteCode: `COT-${result.sale.quoteNumber}`,
@@ -68,82 +63,50 @@ export class SalesController {
           lineErrors: (error as { lineErrors?: unknown }).lineErrors
         });
       }
-      throw new BadRequestException(getErrorMessage(error));
+      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
     }
   }
 
   @Post()
-  async createDraft(
-    @Body() body: CreateSaleDraftDto,
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const sale = await this.repo.createDraft({ ...body, createdByEmail: auth.email });
-      return { saleId: sale.id, quoteCode: `COT-${sale.quoteNumber}`, status: sale.status };
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+  async createDraft(@Body() body: CreateSaleDraftDto, @CurrentAuth() auth: AuthTokenPayload) {
+    const sale = await this.salesOperations.createDraft({ ...body, createdByEmail: auth.email });
+    return { saleId: sale.id, quoteCode: `COT-${sale.quoteNumber}`, status: sale.status };
   }
 
   @Post(":saleId/lines")
   async addLine(
     @Param("saleId") saleId: string,
     @Body() body: SaleLineMutationDto,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      await this.repo.addLine(saleId, {
-        skuCode: body.skuCode,
-        requestedWidthM: body.requestedWidthM,
-        requestedHeightM: body.requestedHeightM,
-        quantity: body.quantity,
-        roomAreaName: body.roomAreaName ?? undefined,
-        categoryId: body.categoryId ?? undefined,
-        categoryName: body.categoryName ?? undefined,
-        displayOrder: body.displayOrder,
-        lineNote: body.lineNote ?? undefined,
-        createdByEmail: auth.email
-      });
-      return { ok: true };
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    await this.salesOperations.addLine(saleId, {
+      skuCode: body.skuCode,
+      requestedWidthM: body.requestedWidthM,
+      requestedHeightM: body.requestedHeightM,
+      quantity: body.quantity,
+      roomAreaName: body.roomAreaName ?? undefined,
+      categoryId: body.categoryId ?? undefined,
+      categoryName: body.categoryName ?? undefined,
+      displayOrder: body.displayOrder,
+      lineNote: body.lineNote ?? undefined,
+      createdByEmail: auth.email
+    });
+    return { ok: true };
   }
 
   @Post(":saleId/confirm")
-  async confirm(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      await this.repo.confirm(saleId);
-      return { ok: true };
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+  async confirm(@Param("saleId") saleId: string) {
+    await this.salesOperations.confirm(saleId);
+    return { ok: true };
   }
 
   @Post(":saleId/cancel")
   async cancel(
     @Param("saleId") saleId: string,
-    @Body() body: CancelSaleDto,
-    @Headers("authorization") authorization?: string
+    @Body() body: CancelSaleDto
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      await this.repo.cancel(saleId, body.canceledReason);
-      return { ok: true };
-    } catch (error) {
-      const message = getErrorMessage(error);
-      if (message.includes("cannot be canceled")) {
-        throw new ConflictException(message);
-      }
-      throw new BadRequestException(message);
-    }
+    await this.salesOperations.cancel(saleId, body.canceledReason);
+    return { ok: true };
   }
 
   @Post(":saleId/lines/:saleLineId/allocate-scrap")
@@ -151,40 +114,27 @@ export class SalesController {
     @Param("saleId") saleId: string,
     @Param("saleLineId") saleLineId: string,
     @Body() body: AllocateScrapDto,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      await this.scrapsRepo.allocateToSaleLine({
-        saleLineId,
-        scrapId: body.scrapId,
-        allocatedByEmail: auth.email
-      });
-      return { ok: true };
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    await this.salesOperations.allocateScrapToLine({
+      saleLineId,
+      scrapId: body.scrapId,
+      allocatedByEmail: auth.email
+    });
+    return { ok: true };
   }
 
   @Get(":saleId/lines/:saleLineId/compatible-scraps")
   async listCompatibleScraps(
     @Param("saleId") saleId: string,
     @Param("saleLineId") saleLineId: string,
-    @Query("limit") limit = "5",
-    @Headers("authorization") authorization?: string
+    @Query("limit") limit = "5"
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      return await this.scrapsRepo.matchForSaleLine({
-        saleId,
-        saleLineId,
-        limit: Number(limit) > 0 ? Number(limit) : 5
-      });
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    return this.salesOperations.matchForSaleLine({
+      saleId,
+      saleLineId,
+      limit: Number(limit) > 0 ? Number(limit) : 5
+    });
   }
 
   @Post(":saleId/lines/:saleLineId/pieces/:pieceId/allocate-scrap")
@@ -193,37 +143,25 @@ export class SalesController {
     @Param("saleLineId") saleLineId: string,
     @Param("pieceId") pieceId: string,
     @Body() body: AllocateScrapDto,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      await this.scrapsRepo.allocateToSaleLinePiece({
-        saleLineId,
-        saleLinePieceId: pieceId,
-        scrapId: body.scrapId,
-        allocatedByEmail: auth.email
-      });
-      return { ok: true };
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    await this.salesOperations.allocateScrapToPiece({
+      saleLineId,
+      saleLinePieceId: pieceId,
+      scrapId: body.scrapId,
+      allocatedByEmail: auth.email
+    });
+    return { ok: true };
   }
 
   @Delete(":saleId/lines/:saleLineId/allocate-scrap")
   async releaseAllocation(
     @Param("saleId") _saleId: string,
     @Param("saleLineId") saleLineId: string,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      await this.scrapsRepo.releaseAllocation({ saleLineId, releasedByEmail: auth.email });
-      return { ok: true };
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    await this.salesOperations.releaseAllocation({ saleLineId, releasedByEmail: auth.email });
+    return { ok: true };
   }
 
   @Delete(":saleId/lines/:saleLineId/pieces/:pieceId/allocate-scrap")
@@ -231,52 +169,33 @@ export class SalesController {
     @Param("saleId") _saleId: string,
     @Param("saleLineId") saleLineId: string,
     @Param("pieceId") pieceId: string,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      await this.scrapsRepo.releasePieceAllocation({
-        saleLineId,
-        saleLinePieceId: pieceId,
-        releasedByEmail: auth.email
-      });
-      return { ok: true };
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    await this.salesOperations.releasePieceAllocation({
+      saleLineId,
+      saleLinePieceId: pieceId,
+      releasedByEmail: auth.email
+    });
+    return { ok: true };
   }
 
   @Patch(":saleId")
   async updateCustomer(
     @Param("saleId") saleId: string,
     @Body() body: UpdateSaleCustomerDto,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      await this.repo.updateCustomer(saleId, auth.email, body);
-      return { ok: true };
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    await this.salesOperations.updateCustomer(saleId, auth.email, body);
+    return { ok: true };
   }
 
   @Patch(":saleId/payment-summary")
   async updatePaymentSummary(
     @Param("saleId") saleId: string,
-    @Body() body: UpdatePaymentSummaryDto,
-    @Headers("authorization") authorization?: string
+    @Body() body: UpdatePaymentSummaryDto
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      await this.repo.updatePaymentSummary(saleId, body.amountPaid);
-      return { ok: true };
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    await this.salesOperations.updatePaymentSummary(saleId, body.amountPaid);
+    return { ok: true };
   }
 
   @Patch(":saleId/lines/:saleLineId")
@@ -284,39 +203,25 @@ export class SalesController {
     @Param("saleId") saleId: string,
     @Param("saleLineId") saleLineId: string,
     @Body() body: SaleLineMutationDto,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      await this.repo.updateLine(saleId, saleLineId, auth.email, body);
-      return { ok: true };
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    await this.salesOperations.updateLine(saleId, saleLineId, auth.email, body);
+    return { ok: true };
   }
 
   @Delete(":saleId/lines/:saleLineId")
   async removeLine(
     @Param("saleId") saleId: string,
     @Param("saleLineId") saleLineId: string,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      await this.repo.removeLine(saleId, saleLineId, auth.email);
-      return { ok: true };
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    await this.salesOperations.removeLine(saleId, saleLineId, auth.email);
+    return { ok: true };
   }
 
   @Get()
-  async list(@Query("branchCode") branchCode = "MAIN", @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const sales = await this.repo.list(branchCode);
+  async list(@Query("branchCode") branchCode = "MAIN") {
+    const sales = await this.salesOperations.list(branchCode);
     return sales.map((sale) => ({
       id: sale.id,
       quoteCode: `COT-${sale.quoteNumber}`,
@@ -403,84 +308,35 @@ export class SalesController {
   async offerPreview(
     @Param("saleId") saleId: string,
     @Body() body: OfferPreviewDto,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const result = await this.scrapsRepo.matchForSaleLines({
-        saleId,
-        lineIds: body.lineIds,
-        limitPerLine: body.limitPerLine ?? 3
-      });
-
-      const user = await prismaClient.appUser.findUnique({ where: { email: auth.email } });
-      if (user) {
-        await this.auditRepo.log({
-          actorUserId: user.id,
-          entityType: "sale",
-          entityId: saleId,
-          action: "STATUS_CHANGE",
-          afterJson: {
-            event: "SCRAP_OFFER_PREVIEW_CREATED",
-            linesChecked: result.lines.length,
-            suggestionsFound: result.lines.reduce((acc, l) => acc + l.suggestions.length, 0)
-          }
-        });
-      }
-
-      return result;
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+    return this.scrapWorkflow.offerPreview({
+      saleId,
+      actorEmail: auth.email,
+      lineIds: body.lineIds,
+      limitPerLine: body.limitPerLine
+    });
   }
 
   @Post(":saleId/auto-scrap-assignment/preview")
-  async previewAutoScrapAssignment(
-    @Param("saleId") saleId: string,
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const result = await this.scrapsRepo.previewAutoAssignment({ saleId });
-      const user = await prismaClient.appUser.findUnique({ where: { email: auth.email } });
-      if (user) {
-        await this.auditRepo.log({
-          actorUserId: user.id,
-          entityType: "sale",
-          entityId: saleId,
-          action: "STATUS_CHANGE",
-          afterJson: {
-            event: "AUTO_SCRAP_ASSIGNMENT_PREVIEW_CREATED",
-            assignedPieces: result.summary.assignedPieces,
-            unmatchedPieces: result.summary.unmatchedPieces
-          }
-        });
-      }
-      return result;
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+  async previewAutoScrapAssignment(@Param("saleId") saleId: string, @CurrentAuth() auth: AuthTokenPayload) {
+    return this.scrapWorkflow.previewAutoAssignment({
+      saleId,
+      actorEmail: auth.email
+    });
   }
 
   @Post(":saleId/auto-scrap-assignment/commit")
   async commitAutoScrapAssignment(
     @Param("saleId") saleId: string,
     @Body() body: CommitAutoScrapAssignmentDto,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      return await this.scrapsRepo.commitAutoAssignment({
-        saleId,
-        allocatedByEmail: auth.email,
-        items: body.items
-      });
-    } catch (error) {
-      throw new BadRequestException(getErrorMessage(error));
-    }
+    return this.salesOperations.commitAutoAssignment({
+      saleId,
+      allocatedByEmail: auth.email,
+      items: body.items
+    });
   }
 
   @Post(":saleId/compatible-scraps/pick-list")
@@ -488,94 +344,29 @@ export class SalesController {
   async pickList(
     @Param("saleId") saleId: string,
     @Body() body: PickListDto,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const sale = await prismaClient.sale.findUnique({
-        where: { id: saleId },
-        include: { branch: true, customer: true }
-      });
-      if (!sale) throw new BadRequestException("Venta no encontrada.");
+    const { sale, pickItems } = await this.scrapWorkflow.buildPickList({
+      saleId,
+      actorEmail: auth.email,
+      items: body.items
+    });
 
-      const pickItems: Array<{
-        lineIndex: number;
-        skuCode: string;
-        requestedWidthM: number;
-        requestedHeightM: number;
-        scrapWidthM: number;
-        scrapHeightM: number;
-        locationCode: string;
-        labelCode: string;
-      }> = [];
-
-      for (let i = 0; i < body.items.length; i++) {
-        const item = body.items[i];
-        const line = await prismaClient.saleLine.findUnique({
-          where: { id: item.saleLineId },
-          include: { sku: true }
-        });
-        const scrap = await prismaClient.scrap.findUnique({
-          where: { id: item.scrapId },
-          include: { location: true }
-        });
-        if (!line || !scrap) continue;
-
-        const labelRecord = await prismaClient.label.findFirst({
-          where: { scrapId: scrap.id },
-          select: { id: true }
-        });
-
-        pickItems.push({
-          lineIndex: i + 1,
-          skuCode: line.sku.code,
-          requestedWidthM: Number(line.requestedWidthM),
-          requestedHeightM: Number(line.requestedHeightM),
-          scrapWidthM: Number(scrap.widthM),
-          scrapHeightM: Number(scrap.heightM),
-          locationCode: scrap.location?.code ?? "Sin ubicación",
-          labelCode: labelRecord?.id.slice(0, 8) ?? scrap.id.slice(0, 8)
-        });
-      }
-
-      const user = await prismaClient.appUser.findUnique({ where: { email: auth.email } });
-      if (user) {
-        await this.auditRepo.log({
-          actorUserId: user.id,
-          entityType: "sale",
-          entityId: saleId,
-          action: "STATUS_CHANGE",
-          afterJson: {
-            event: "SCRAP_PICK_LIST_CREATED",
-            itemCount: pickItems.length
-          }
-        });
-      }
-
-      const html = renderPickListHtml(sale, pickItems);
-      return new StreamableFile(Buffer.from(html, "utf-8"), { type: "text/html; charset=utf-8" });
-    } catch (error) {
-      if (error instanceof BadRequestException) throw error;
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+    const html = renderPickListHtml(sale, pickItems);
+    return new StreamableFile(Buffer.from(html, "utf-8"), { type: "text/html; charset=utf-8" });
   }
 
   @Get(":saleId/print/sale/html")
   @Header("Content-Type", "text/html; charset=utf-8")
-  async printSaleHtml(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const sale = await this.repo.getPrintableSale(saleId);
+  async printSaleHtml(@Param("saleId") saleId: string) {
+    const sale = await this.salesOperations.getPrintableSale(saleId);
     return new StreamableFile(Buffer.from(renderSaleDocumentHtml(sale, "sale"), "utf-8"), { type: "text/html; charset=utf-8" });
   }
 
   @Get(":saleId/print/work-order/html")
   @Header("Content-Type", "text/html; charset=utf-8")
-  async printWorkOrderHtml(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const sale = await this.repo.getPrintableSale(saleId);
+  async printWorkOrderHtml(@Param("saleId") saleId: string) {
+    const sale = await this.salesOperations.getPrintableSale(saleId);
     return new StreamableFile(Buffer.from(renderSaleDocumentHtml(sale, "work-order"), "utf-8"), { type: "text/html; charset=utf-8" });
   }
 
@@ -584,13 +375,11 @@ export class SalesController {
   async printCutSheetHtml(
     @Param("saleId") saleId: string,
     @Body() body: { reserveSuggestedScraps?: boolean },
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const cutSheet = await this.scrapsRepo.generateCutSheet({
+    const cutSheet = await this.scrapWorkflow.generateCutSheet({
       saleId,
-      requestedByEmail: auth.email,
+      actorEmail: auth.email,
       reserveSuggestedScraps: Boolean(body.reserveSuggestedScraps)
     });
     return new StreamableFile(Buffer.from(renderCutSheetHtml(cutSheet), "utf-8"), { type: "text/html; charset=utf-8" });
@@ -598,26 +387,17 @@ export class SalesController {
 
   @Get(":saleId/print/sale/zpl")
   @Header("Content-Type", "text/plain; charset=utf-8")
-  async printSaleZpl(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const sale = await this.repo.getPrintableSale(saleId);
+  async printSaleZpl(@Param("saleId") saleId: string) {
+    const sale = await this.salesOperations.getPrintableSale(saleId);
     return new StreamableFile(Buffer.from(renderSaleDocumentZpl(sale, "sale"), "utf-8"), { type: "text/plain; charset=utf-8" });
   }
 
   @Get(":saleId/print/work-order/zpl")
   @Header("Content-Type", "text/plain; charset=utf-8")
-  async printWorkOrderZpl(@Param("saleId") saleId: string, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const sale = await this.repo.getPrintableSale(saleId);
+  async printWorkOrderZpl(@Param("saleId") saleId: string) {
+    const sale = await this.salesOperations.getPrintableSale(saleId);
     return new StreamableFile(Buffer.from(renderSaleDocumentZpl(sale, "work-order"), "utf-8"), { type: "text/plain; charset=utf-8" });
   }
-}
-
-function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return "Unexpected error";
 }
 
 function renderSaleDocumentHtml(sale: Awaited<ReturnType<PrismaSalesRepository["getPrintableSale"]>>, mode: "sale" | "work-order") {

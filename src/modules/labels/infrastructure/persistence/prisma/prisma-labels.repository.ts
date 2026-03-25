@@ -1,20 +1,22 @@
 import { Injectable } from "@nestjs/common";
-import { AuditAction, LabelType, PrintChannel, Prisma } from "@prisma/client";
-import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
+import { AuditAction, LabelType, Prisma, PrismaClient, PrintChannel } from "@prisma/client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 
 @Injectable()
 export class PrismaLabelsRepository {
-  private readonly auditRepo = new PrismaAuditRepository();
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly auditRepo: PrismaAuditRepository
+  ) {}
 
   async createFromQuote(quoteId: string, createdByEmail: string) {
-    const quote = await prismaClient.quote.findUnique({
+    const quote = await this.prisma.quote.findUnique({
       where: { id: quoteId },
       include: { sku: true }
     });
     if (!quote) throw new Error("Cotización no encontrada.");
 
-    const user = await prismaClient.appUser.findUnique({ where: { email: createdByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: createdByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
     const payload = {
@@ -29,7 +31,7 @@ export class PrismaLabelsRepository {
       qr: `TELITA:QUOTE:${quote.id}`
     };
 
-    const label = await prismaClient.label.create({
+    const label = await this.prisma.label.create({
       data: {
         branchId: quote.branchId,
         type: LabelType.SALE_CUT,
@@ -50,14 +52,14 @@ export class PrismaLabelsRepository {
   }
 
   async createFromScrap(scrapId: string, createdByEmail: string) {
-    const scrap = await prismaClient.scrap.findUnique({
+    const scrap = await this.prisma.scrap.findUnique({
       where: { id: scrapId },
       include: { sku: true, location: true }
     });
     if (!scrap) throw new Error("Retazo no encontrado.");
     if (scrap.status !== "STORED") throw new Error("El retazo debe estar en estado ALMACENADO para crear una etiqueta.");
 
-    const user = await prismaClient.appUser.findUnique({ where: { email: createdByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: createdByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
     const payload = {
@@ -71,7 +73,7 @@ export class PrismaLabelsRepository {
       qr: `TELITA:SCRAP:${scrap.id}`
     };
 
-    const label = await prismaClient.label.create({
+    const label = await this.prisma.label.create({
       data: {
         branchId: scrap.branchId,
         type: LabelType.SCRAP,
@@ -92,7 +94,7 @@ export class PrismaLabelsRepository {
   }
 
   async createBatchFromSale(saleId: string, createdByEmail: string) {
-    const sale = await prismaClient.sale.findUnique({
+    const sale = await this.prisma.sale.findUnique({
       where: { id: saleId },
       include: {
         branch: true,
@@ -108,94 +110,84 @@ export class PrismaLabelsRepository {
     if (!sale) throw new Error("Venta no encontrada.");
     if (sale.lines.length === 0) throw new Error("La venta no tiene líneas.");
 
-    const user = await prismaClient.appUser.findUnique({ where: { email: createdByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: createdByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
     const results: Array<{
       labelId: string;
       saleLineId: string;
-      saleLinePieceId: string;
       skuCode: string;
-      pieceIndex: number;
-      pieceTotal: number;
+      lineIndex: number;
+      totalLines: number;
       roomAreaName: string | null;
       printEventId: string;
     }> = [];
 
-    for (const line of sale.lines) {
-      const pieces = line.pieces.length > 0
-        ? line.pieces
-        : [{
-            id: line.id,
-            pieceIndex: 1,
-            pieceTotal: line.quantity,
-            requestedWidthM: line.requestedWidthM,
-            requestedHeightM: line.requestedHeightM,
-            roomAreaName: line.roomAreaName
-          }];
+    // Generate one label per line (not per piece)
+    for (let i = 0; i < sale.lines.length; i++) {
+      const line = sale.lines[i];
+      const lineIndex = i + 1; // 1-based index
+      
+      const payload = buildSaleLinePayload({
+        sale,
+        line,
+        lineIndex,
+        totalLines: sale.lines.length
+      });
 
-      for (const piece of pieces) {
-        const payload = buildSalePiecePayload({
-          sale,
-          line,
-          piece
-        });
-
-        const existing = await prismaClient.label.findFirst({
-          where: {
-            saleLineId: line.id,
-            saleLinePieceId: piece.id
-          }
-        });
-
-        const label = existing
-          ? existing
-          : await prismaClient.label.create({
-              data: {
-                branchId: sale.branchId,
-                type: LabelType.SALE_CUT,
-                saleLineId: line.id,
-                saleLinePieceId: piece.id,
-                payloadJson: payload,
-                createdBy: user.id
-              }
-            });
-
-        const event = await prismaClient.labelPrintEvent.create({
-          data: {
-            labelId: label.id,
-            printedBy: user.id,
-            printedAt: new Date(),
-            channel: PrintChannel.BROWSER
-          }
-        });
-
-        await this.auditRepo.log({
-          branchId: sale.branchId,
-          actorUserId: user.id,
-          entityType: "label",
-          entityId: label.id,
-          action: existing ? AuditAction.PRINT : AuditAction.CREATE,
-          afterJson: {
-            type: label.type,
-            saleId: sale.id,
-            saleLineId: line.id,
-            saleLinePieceId: piece.id,
-            printEventId: event.id
-          }
-        });
-
-        results.push({
-          labelId: label.id,
+      const existing = await this.prisma.label.findFirst({
+        where: {
           saleLineId: line.id,
-          saleLinePieceId: piece.id,
-          skuCode: line.sku.code,
-          pieceIndex: piece.pieceIndex,
-          pieceTotal: piece.pieceTotal,
-          roomAreaName: piece.roomAreaName ?? line.roomAreaName ?? null,
+          saleLinePieceId: null // Line labels don't have piece ID
+        }
+      });
+
+      const label = existing
+        ? existing
+        : await this.prisma.label.create({
+            data: {
+              branchId: sale.branchId,
+              type: LabelType.SALE_CUT,
+              saleLineId: line.id,
+              saleLinePieceId: null,
+              payloadJson: payload,
+              createdBy: user.id
+            }
+          });
+
+      const event = await this.prisma.labelPrintEvent.create({
+        data: {
+          labelId: label.id,
+          printedBy: user.id,
+          printedAt: new Date(),
+          channel: PrintChannel.BROWSER
+        }
+      });
+
+      await this.auditRepo.log({
+        branchId: sale.branchId,
+        actorUserId: user.id,
+        entityType: "label",
+        entityId: label.id,
+        action: existing ? AuditAction.PRINT : AuditAction.CREATE,
+        afterJson: {
+          type: label.type,
+          saleId: sale.id,
+          saleLineId: line.id,
+          lineIndex,
           printEventId: event.id
-        });
-      }
+        }
+      });
+
+      results.push({
+        labelId: label.id,
+        saleLineId: line.id,
+        skuCode: line.sku.code,
+        lineIndex,
+        totalLines: sale.lines.length,
+        roomAreaName: line.roomAreaName ?? null,
+        printEventId: event.id
+      });
     }
 
     return results;
@@ -221,7 +213,7 @@ export class PrismaLabelsRepository {
       quoteId: params.quoteId
     };
     const [data, total] = await Promise.all([
-      prismaClient.label.findMany({
+      this.prisma.label.findMany({
         where,
         include: {
           printEvents: { orderBy: { printedAt: "desc" }, take: 1 },
@@ -231,7 +223,7 @@ export class PrismaLabelsRepository {
         skip,
         take: limit
       }),
-      prismaClient.label.count({ where })
+      this.prisma.label.count({ where })
     ]);
 
     return {
@@ -244,7 +236,7 @@ export class PrismaLabelsRepository {
   }
 
   async getHtmlContent(labelId: string): Promise<Buffer> {
-    const label = await prismaClient.label.findUnique({
+    const label = await this.prisma.label.findUnique({
       where: { id: labelId },
       include: { branch: true }
     });
@@ -258,7 +250,7 @@ export class PrismaLabelsRepository {
   }
 
   async getZplContent(labelId: string): Promise<Buffer> {
-    const label = await prismaClient.label.findUnique({ where: { id: labelId } });
+    const label = await this.prisma.label.findUnique({ where: { id: labelId } });
     if (!label) throw new Error("Etiqueta no encontrada.");
     return Buffer.from(renderLabelZpl(label), "utf-8");
   }
@@ -268,16 +260,16 @@ export class PrismaLabelsRepository {
     items: Array<{ type: "SALE_LINE" | "SCRAP"; saleLineId?: string; scrapId?: string }>;
     createdByEmail: string;
   }) {
-    const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
+    const branch = await this.prisma.branch.findUnique({ where: { code: input.branchCode } });
     if (!branch) throw new Error("Sucursal no encontrada.");
-    const user = await prismaClient.appUser.findUnique({ where: { email: input.createdByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: input.createdByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
     const results: Array<{ labelId: string; type: string; saleLineId?: string; saleLinePieceId?: string; scrapId?: string }> = [];
 
     for (const item of input.items) {
       if (item.type === "SALE_LINE" && item.saleLineId) {
-        const line = await prismaClient.saleLine.findUnique({
+        const line = await this.prisma.saleLine.findUnique({
           where: { id: item.saleLineId },
           include: {
             sku: true,
@@ -297,7 +289,7 @@ export class PrismaLabelsRepository {
               roomAreaName: line.roomAreaName
             }];
         for (const piece of pieces) {
-          const existing = await prismaClient.label.findFirst({
+          const existing = await this.prisma.label.findFirst({
             where: {
               saleLineId: line.id,
               saleLinePieceId: piece.id
@@ -308,7 +300,7 @@ export class PrismaLabelsRepository {
             continue;
           }
           const payload = buildSalePiecePayload({ sale: line.sale, line, piece });
-          const label = await prismaClient.label.create({
+          const label = await this.prisma.label.create({
             data: {
               branchId: branch.id,
               type: LabelType.SALE_CUT,
@@ -329,12 +321,12 @@ export class PrismaLabelsRepository {
           results.push({ labelId: label.id, type: label.type, saleLineId: line.id, saleLinePieceId: piece.id });
         }
       } else if (item.type === "SCRAP" && item.scrapId) {
-        const existing = await prismaClient.label.findFirst({ where: { scrapId: item.scrapId } });
+        const existing = await this.prisma.label.findFirst({ where: { scrapId: item.scrapId } });
         if (existing) {
           results.push({ labelId: existing.id, type: existing.type, scrapId: item.scrapId });
           continue;
         }
-        const scrap = await prismaClient.scrap.findUnique({ where: { id: item.scrapId }, include: { sku: true, location: true } });
+        const scrap = await this.prisma.scrap.findUnique({ where: { id: item.scrapId }, include: { sku: true, location: true } });
         if (!scrap) continue;
         const payload = {
           kind: "scrap",
@@ -346,7 +338,7 @@ export class PrismaLabelsRepository {
           locationCode: scrap.location?.code ?? null,
           qr: `TELITA:SCRAP:${scrap.id}`
         };
-        const label = await prismaClient.label.create({
+        const label = await this.prisma.label.create({
           data: { branchId: branch.id, type: LabelType.SCRAP, scrapId: scrap.id, payloadJson: payload, createdBy: user.id }
         });
         await this.auditRepo.log({ branchId: branch.id, actorUserId: user.id, entityType: "label", entityId: label.id, action: AuditAction.CREATE, afterJson: { type: label.type, scrapId: scrap.id } });
@@ -358,7 +350,7 @@ export class PrismaLabelsRepository {
   }
 
   async getBatchHtmlContent(labelIds: string[]): Promise<Buffer> {
-    const labels = await prismaClient.label.findMany({
+    const labels = await this.prisma.label.findMany({
       where: { id: { in: labelIds } },
       include: { branch: true }
     });
@@ -370,21 +362,21 @@ export class PrismaLabelsRepository {
   }
 
   async getBatchZplContent(labelIds: string[]): Promise<Buffer> {
-    const labels = await prismaClient.label.findMany({
+    const labels = await this.prisma.label.findMany({
       where: { id: { in: labelIds } }
     });
     return Buffer.from(labels.map((label) => renderLabelZpl(label)).join("\n"), "utf-8");
   }
 
   async batchReprint(labelIds: string[], printedByEmail: string) {
-    const user = await prismaClient.appUser.findUnique({ where: { email: printedByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: printedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
     let registered = 0;
     for (const labelId of labelIds) {
-      const label = await prismaClient.label.findUnique({ where: { id: labelId } });
+      const label = await this.prisma.label.findUnique({ where: { id: labelId } });
       if (!label) continue;
-      await prismaClient.labelPrintEvent.create({
+      await this.prisma.labelPrintEvent.create({
         data: { labelId, printedBy: user.id, printedAt: new Date(), channel: PrintChannel.BROWSER }
       });
       await this.auditRepo.log({ branchId: label.branchId, actorUserId: user.id, entityType: "label", entityId: label.id, action: AuditAction.PRINT, afterJson: { batch: true } });
@@ -394,13 +386,13 @@ export class PrismaLabelsRepository {
   }
 
   async reprint(labelId: string, printedByEmail: string) {
-    const label = await prismaClient.label.findUnique({ where: { id: labelId } });
+    const label = await this.prisma.label.findUnique({ where: { id: labelId } });
     if (!label) throw new Error("Etiqueta no encontrada.");
 
-    const user = await prismaClient.appUser.findUnique({ where: { email: printedByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: printedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
-    const event = await prismaClient.labelPrintEvent.create({
+    const event = await this.prisma.labelPrintEvent.create({
       data: {
         labelId: label.id,
         printedBy: user.id,
@@ -463,6 +455,46 @@ function formatPayloadValue(key: string, value: unknown): string {
   return String(value);
 }
 
+function buildSaleLinePayload(input: {
+  sale: {
+    id: string;
+    quoteNumber: number;
+    createdAt: Date;
+    customer?: {
+      fullName: string;
+      rut: string | null;
+    } | null;
+    customerName?: string | null;
+  };
+  line: {
+    id: string;
+    sku: { code: string; name: string };
+    requestedWidthM: { toString(): string } | number;
+    requestedHeightM: { toString(): string } | number;
+    roomAreaName?: string | null;
+  };
+  lineIndex: number;
+  totalLines: number;
+}) {
+  return {
+    kind: "sale_line_label",
+    saleId: input.sale.id,
+    saleLineId: input.line.id,
+    customerName: input.sale.customer?.fullName ?? input.sale.customerName ?? "Sin cliente",
+    customerRut: input.sale.customer?.rut ?? "Sin RUT",
+    purchaseOrderNumber: `COT-${input.sale.quoteNumber}`,
+    itemIndex: input.lineIndex,
+    totalItems: input.totalLines,
+    purchaseDate: input.sale.createdAt.toISOString().split('T')[0],
+    location: input.line.roomAreaName ?? "Sin ubicación",
+    fabricName: input.line.sku.name,
+    color: "Por implementar",
+    width: Number(input.line.requestedWidthM),
+    height: Number(input.line.requestedHeightM),
+    qr: `TELITA:SALE_LINE:${input.line.id}`
+  };
+}
+
 function buildSalePiecePayload(input: {
   sale: {
     id: string;
@@ -518,6 +550,13 @@ function buildSalePiecePayload(input: {
 
 function renderSingleLabelHtml(label: { id: string; branchId: string; createdAt: Date; type: string; payloadJson: unknown; branch?: { name: string } | null }) {
   const payload = label.payloadJson as Record<string, unknown>;
+  
+  // Check if this is a new sale line label
+  if (isSaleLineLabelPayload(payload)) {
+    return renderNewSaleLineHtml(payload);
+  }
+  
+  // Fallback to old format for existing labels
   const qrCode = (payload.qr as string) ?? `TELITA:LABEL:${label.id}`;
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=${encodeURIComponent(qrCode)}`;
   const fields = Object.entries(payload)
@@ -573,7 +612,217 @@ function renderSingleLabelHtml(label: { id: string; branchId: string; createdAt:
 </html>`;
 }
 
+function renderNewSaleLineHtml(payload: Record<string, unknown>) {
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Etiqueta Telita</title>
+${renderNewSaleLineHtmlStyles(false)}
+</head>
+<body>
+${renderNewSaleLineCardHtml(payload)}
+</body>
+</html>`;
+}
+
+function renderNewSaleLineCardHtml(payload: Record<string, unknown>) {
+  const customerName = String(payload.customerName || "Sin cliente");
+  const rut = String(payload.customerRut || "Sin RUT");
+  const purchaseOrder = String(payload.purchaseOrderNumber || "Sin OC");
+  const itemIndex = String(payload.itemIndex || "1");
+  const totalItems = String(payload.totalItems || "1");
+  const purchaseDate = String(payload.purchaseDate || "Sin fecha");
+  const location = String(payload.location || "Sin ubicación");
+  const fabric = String(payload.fabricName || "Sin tela");
+  const color = String(payload.color || "Por implementar");
+  const width = String(payload.width || "0");
+  const height = String(payload.height || "0");
+
+  return `<div class="label">
+  <div class="header-section">
+    <div class="customer-name">${customerName}</div>
+    <div class="rut">Rut: ${rut}</div>
+    <div class="purchase-order">Orden de compra: ${purchaseOrder}</div>
+    <div class="divider"></div>
+  </div>
+  
+  <div class="content-section">
+    <div class="info-label">Ubicación:</div>
+    <div class="info-value">${location}</div>
+    
+    <div class="info-label">Tela:</div>
+    <div class="info-value">${fabric}</div>
+    
+    <div class="info-label">Color:</div>
+    <div class="info-value">${color}</div>
+    
+    <div class="info-label">Ancho:</div>
+    <div class="info-value">${width}</div>
+    
+    <div class="info-label">Alto:</div>
+    <div class="info-value">${height}</div>
+  </div>
+  
+  <div class="footer-section">
+    <div class="item-counter">${itemIndex} de ${totalItems}</div>
+    <div class="purchase-date">Fecha de compra: ${purchaseDate}</div>
+  </div>
+</div>`;
+}
+
+function renderNewSaleLineHtmlStyles(isBatch: boolean) {
+  return `<style>
+  @page { size: 148mm 66mm; margin: 0; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { 
+    font-family: Arial, sans-serif; 
+    background: #f0f0f0; 
+    display: flex; 
+    justify-content: center;
+    align-items: flex-start;
+    min-height: 100vh;
+    padding: 8mm;
+    ${isBatch ? "flex-direction: column;" : ""}
+  }
+  .label { 
+    width: 148mm;
+    min-height: 66mm;
+    max-width: 100%;
+    background: #fff;
+    font-family: Arial, sans-serif;
+    box-shadow: 0 2px 8px rgba(0,0,0,.2);
+    padding: 4mm;
+    display: flex;
+    flex-direction: column;
+    margin: 0 auto;
+    overflow: hidden;
+    ${isBatch ? "page-break-after: always; break-after: page;" : ""}
+  }
+  
+  .header-section {
+    margin-bottom: 2.5mm;
+    min-width: 0;
+  }
+  
+  .customer-name { 
+    font-size: 18px;
+    font-weight: bold; 
+    margin-bottom: 1mm;
+    line-height: 1.15;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  
+  .rut { 
+    font-size: 17px;
+    font-weight: bold; 
+    margin-bottom: 1mm;
+    line-height: 1.15;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  
+  .purchase-order { 
+    font-size: 18px;
+    font-weight: bold; 
+    margin-bottom: 2.5mm;
+    line-height: 1.15;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  
+  .divider { 
+    height: 2px; 
+    background: #000; 
+    margin-bottom: 2.5mm;
+    width: 100%;
+  }
+  
+  .content-section {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 20mm minmax(0, 1fr);
+    gap: 2mm 3mm;
+    align-content: start;
+    margin-bottom: 3mm;
+    min-width: 0;
+  }
+  
+  .info-label {
+    font-size: 15px;
+    font-weight: bold; 
+    line-height: 1.15;
+    white-space: nowrap;
+  }
+  
+  .info-value {
+    font-size: 15px;
+    line-height: 1.15;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  
+  .footer-section {
+    margin-top: auto;
+    border: 2px solid #000;
+    padding: 2.5mm 3mm;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 3mm;
+    min-height: 11mm;
+    min-width: 0;
+  }
+  
+  .item-counter { 
+    font-size: 15px;
+    font-weight: bold; 
+    line-height: 1.15;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  
+  .purchase-date { 
+    font-size: 12px;
+    line-height: 1.15;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  
+  @media print { 
+    body { background: #fff; padding: 0; margin: 0; }
+    .label { box-shadow: none; width: 148mm; min-height: 66mm; }
+  }
+  @media screen {
+    body { gap: ${isBatch ? "6mm" : "0"}; }
+  }
+</style>`;
+}
+
 function renderBatchLabelHtml(labels: Array<{ id: string; branchId: string; createdAt: Date; type: string; payloadJson: unknown; branch?: { name: string } | null }>) {
+  if (labels.length > 0 && labels.every((label) => isSaleLineLabelPayload(label.payloadJson as Record<string, unknown>))) {
+    const labelCards = labels.map((label) => renderNewSaleLineCardHtml(label.payloadJson as Record<string, unknown>)).join("\n");
+    return `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Etiquetas Telita</title>
+${renderNewSaleLineHtmlStyles(true)}
+</head>
+<body>
+${labelCards}
+</body>
+</html>`;
+  }
+
   const labelCards = labels.map((label) => {
     const payload = label.payloadJson as Record<string, unknown>;
     const qrCode = (payload.qr as string) ?? `TELITA:LABEL:${label.id}`;
@@ -634,8 +883,19 @@ function renderBatchLabelHtml(labels: Array<{ id: string; branchId: string; crea
 </html>`;
 }
 
+function isSaleLineLabelPayload(payload: Record<string, unknown>) {
+  return payload.kind === "sale_line_label";
+}
+
 function renderLabelZpl(label: { id: string; type: string; payloadJson: unknown }) {
   const payload = label.payloadJson as Record<string, unknown>;
+  
+  // Check if this is a new sale line label or old format
+  if (payload.kind === "sale_line_label") {
+    return renderNewSaleLineZpl(payload);
+  }
+  
+  // Fallback to old format for existing labels
   const line1 = zplText(payload.customerName ?? payload.skuCode ?? "TELITA");
   const line2 = zplText(payload.roomAreaName ?? payload.pieceLabel ?? payload.locationCode ?? "");
   const line3 = zplText(`${payload.widthM ?? ""} x ${payload.heightM ?? ""}`);
@@ -651,6 +911,46 @@ function renderLabelZpl(label: { id: string; type: string; payloadJson: unknown 
 ^FO40,148^A0N,22,22^FD${line4}^FS
 ^FO540,58^BQN,2,4^FDLA,${qr}^FS
 ^FO40,320^A0N,20,20^FD${zplText(label.id.slice(0, 8).toUpperCase())}^FS
+^XZ`;
+}
+
+function renderNewSaleLineZpl(payload: Record<string, unknown>) {
+  const customerName = zplText(payload.customerName || "Sin cliente");
+  const rut = zplText(payload.customerRut || "Sin RUT");
+  const purchaseOrder = zplText(payload.purchaseOrderNumber || "Sin OC");
+  const itemIndex = zplText(payload.itemIndex || "1");
+  const totalItems = zplText(payload.totalItems || "1");
+  const purchaseDate = zplText(payload.purchaseDate || "Sin fecha");
+  const location = zplText(payload.location || "Sin ubicación");
+  const fabric = zplText(payload.fabricName || "Sin tela");
+  const color = zplText(payload.color || "Por implementar");
+  const width = zplText(payload.width || "0");
+  const height = zplText(payload.height || "0");
+
+  return `^XA
+^LL531
+^PW1181
+^FO96,15^A0N,24,24^FD${customerName}^FS
+^FO96,86^A0N,25,25^FDOrden de compra: ${purchaseOrder}^FS
+^FO96,121^GB944,2,2^FS
+^FO97,429^GB458,2,2^FS
+^FO96,435^GB944,80,2^FS
+^FO114,450^A0N,20,20^FD${itemIndex} de ${totalItems}^FS
+^FO96,50^A0N,24,24^FDRut: ${rut}^FS
+^FO97,147^A0N,20,20^FDUbicación:^FS
+^FO180,147^A0N,20,20^FD${location}^FS
+^FO116,486^A0N,16,16^FDFecha de compra: ${purchaseDate}^FS
+^FO97,192^A0N,20,20^FDTela:^FS
+^FO135,192^A0N,20,20^FD${fabric}^FS
+^FO97,282^A0N,20,20^FDAncho:^FS
+^FO155,282^A0N,20,20^FD${width}^FS
+^FO97,327^A0N,20,20^FDAlto:^FS
+^FO140,327^A0N,20,20^FD${height}^FS
+^FO97,237^A0N,20,20^FDColor:^FS
+^FO150,237^A0N,20,20^FD${color}^FS
+^FO927,445
+^GFA,624,624,12,000000000000000000000000,000000000000000000000000,000000000000000000000000,000000000000000000000000,000000000000000000000000,000000000000000000000000,000000000000000000000000,000000000000000000000000,000000000000000000000000,000000000000000000000000,000000000000000000000000,000000000000000000000000,000000000000000000000000,000000000000000000000000,000000000000000000000000,000800000000000000000000,000040000000000000000000,008900000000000000000000,002400000000000000000000,002280000000000000000000,009400000000000000000000,0122A0000000000000000000,021400000000000000000000,004280000000000000140000,001400000000000000228000,0040A0000000000000000000,000400000000000000A14000,000000000000000000000000,00080000000000000080A000,000000000000000001001000,00E00018000C080000004000,00E00018000C180002800000,00A0DE1D208E08340260CF80,01B0EB36608B18EE446188E0,013041086189088228408C40,0190C198208D99830460CC00,0318C3186088C9FF28618780,03384188619C5880006080C0,06A8C118208869852A619060,040CC18C618838C61031CC60,0604C30E3F8C107C423F0FC0,000400010008080020008100,000000000000000080000000,0000000000000A0040000000,000000000000000100000000,000000000000050200000000,000000000000000100000000,000000000000028400000000,000000000000002200000000,000000000000014800000000,000000000000001000000000,000000000000000000000000
+^FS
 ^XZ`;
 }
 

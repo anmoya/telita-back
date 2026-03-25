@@ -1,4 +1,6 @@
-import type { PriceListRepositoryPort } from "../ports/price-list-repository.port";
+import { Inject, Injectable } from "@nestjs/common";
+import { AppValidationError } from "../../../../shared/application/errors/app-error";
+import { PRICE_LIST_REPOSITORY, type PriceListRepositoryPort } from "../ports/price-list-repository.port";
 
 export interface UpdatePriceListInput {
   id: string;
@@ -7,15 +9,19 @@ export interface UpdatePriceListInput {
   validTo?: string | null;
 }
 
+@Injectable()
 export class UpdatePriceListUseCase {
-  constructor(private readonly priceListRepo: PriceListRepositoryPort) {}
+  constructor(
+    @Inject(PRICE_LIST_REPOSITORY)
+    private readonly priceListRepo: PriceListRepositoryPort
+  ) {}
 
   async execute(input: UpdatePriceListInput): Promise<void> {
     const updateData: { name?: string; validFrom?: Date; validTo?: Date | null } = {};
 
     if (input.name !== undefined) {
       if (input.name.trim().length === 0) {
-        throw new Error("El nombre no puede estar vacío");
+        throw new AppValidationError("El nombre no puede estar vacío");
       }
       updateData.name = input.name.trim();
     }

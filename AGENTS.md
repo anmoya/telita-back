@@ -1,56 +1,61 @@
 # AGENTS.md
 
-This file provides guidance to agents when working with code in this repository.
+Guia para agentes trabajando en `telita-back/`.
 
-## Commands
+## 1. Comandos
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start dev server with watch mode |
-| `npm run build` | Generate Prisma client and build |
-| `npm run lint` | Run ESLint on src |
-| `npm run typecheck` | TypeScript type checking |
-| `npm run db:generate` | Generate Prisma client |
-| `npm run db:migrate` | Run Prisma migrations |
-| `npm run db:seed` | Seed database |
+- `npm run dev`
+- `npm run build`
+- `npm run typecheck`
+- `npm test`
+- `npm run verify`
+- `npm run db:generate`
+- `npm run db:migrate`
+- `npm run db:deploy`
+- `npm run db:seed`
 
-## Environment Variables
+## 2. Arquitectura que debe respetarse
 
-- `PORT` - Server port (default: 3001)
-- `DATABASE_URL` - PostgreSQL connection string
-- `FRONTEND_ORIGIN` - Allowed CORS origin (default: http://localhost:3000)
-- `AUTH_SECRET` - Secret for token signing (default: telita_dev_secret)
+Regla base:
 
-## Architecture Rules (Non-Obvious)
+- `Controller -> Application -> Infrastructure`
 
-- **Port/Adapter Pattern**: Use cases in `application/` depend on interfaces/ports. Never import `@prisma/client` or `infrastructure/` in application layer
-- **Prisma Only in Infrastructure**: Database access must be in `infrastructure/persistence/prisma/` repositories
-- **No JWT**: Auth uses custom HMAC-SHA256 token format (not JWT)
-- **API Prefix**: All routes are prefixed with `v1` (e.g., `/v1/auth/login`)
+Interpretacion:
 
-## Code Patterns
+- controllers reciben request, auth, params y serializan respuesta;
+- use cases y application services coordinan negocio;
+- persistencia, Prisma y queries viven en infraestructura;
+- dependencias transversales viven en `shared/`.
 
-- **Use Case Injection**: Pass ports via constructor to use cases
-- **Factory Pattern**: Use factory functions to create use cases with dependencies (see `create-quote-use-case.factory.ts`)
-- **Auth Helper**: Use `requireAuth()` and `requireAnyRole()` from `shared/presentation/auth.ts`
-- **Roles**: Only `superadmin`, `admin`, `operador` roles exist
+## 3. Reglas obligatorias
 
-## Testing
+- no crear use cases con `new` dentro de controllers;
+- no importar Prisma directo fuera del camino via DI / `PrismaService`;
+- no meter queries o logica funcional relevante en controllers;
+- preferir ports/tokens cuando la frontera application/infrastructure sea clara;
+- usar `AppValidationError`, `AppNotFoundError`, `AppConflictError`, `AppForbiddenError` o `AppUnauthorizedError` para errores funcionales;
+- si agregas endpoint nuevo, debe quedar bajo el modulo/dominio correcto;
+- health/readiness forman parte del contrato operativo del backend.
 
-- **No test framework**: Project does not have Jest/Vitest configured
-- To add tests, install Jest or Vitest and configure separately
+## 4. Estado actual importante
 
-## Project Documentation (IMPORTANT)
+- auth usa guards/decorators, no helpers manuales viejos;
+- Prisma vive por DI y no debe reintroducirse como singleton ad hoc;
+- existe filtro global de `AppError`;
+- hay endpoints operativos en `/v1/health`, `/v1/health/live` y `/v1/health/ready`;
+- `npm run verify` es la secuencia minima de cierre tecnico.
 
-After each session or relevant change, you MUST update these files:
-- `/home/alfonso/Dev/projects/telita/FRONTEND_DOC.md`
-- `/home/alfonso/Dev/projects/telita/BACKEND_DOC.md`  
-- `/home/alfonso/Dev/projects/telita/DATABASE_DOC.md`
+## 5. Antipatrones prohibidos
 
-Also reference specs in: `/home/alfonso/Dev/projects/telita/telita-docs/`
+- `throw new Error(...)` para casos funcionales normales;
+- controllers que importen repositorios Prisma concretos salvo excepcion muy justificada;
+- wiring manual de dependencias en capa HTTP;
+- logica de dominio mezclada con serializacion;
+- cambios que pasen `build` pero no `verify`.
 
-## Dependencies
+## 6. Documentacion relevante
 
-- Node >=22 <23 (check with `node --version`)
-- npm >=10 <11
-- PostgreSQL database required
+- `../telita-docs/01-arquitectura/arquitectura-vigente-y-reglas-de-ejecucion.md`
+- `../telita-docs/04-specs/backlog-remediacion-tecnica.md`
+
+Si cambias una frontera importante de arquitectura o el backlog vigente, actualiza `telita-docs/`.

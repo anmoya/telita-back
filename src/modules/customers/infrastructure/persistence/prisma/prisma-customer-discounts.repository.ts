@@ -1,9 +1,13 @@
-import { Prisma } from "@prisma/client";
-import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
+import { Injectable } from "@nestjs/common";
+import { Prisma, PrismaClient } from "@prisma/client";
+import { AppConflictError, AppNotFoundError, AppValidationError } from "../../../../../shared/application/errors/app-error";
 
+@Injectable()
 export class PrismaCustomerDiscountsRepository {
+  constructor(private readonly prisma: PrismaClient) {}
+
   async listByCustomer(customerId: string) {
-    return prismaClient.customerDiscount.findMany({
+    return this.prisma.customerDiscount.findMany({
       where: { customerId },
       include: { createdByUser: { select: { email: true, fullName: true } } },
       orderBy: { validFrom: "desc" }
@@ -12,7 +16,7 @@ export class PrismaCustomerDiscountsRepository {
 
   async findActiveForDate(customerId: string, effectiveDate: Date) {
     const dateOnly = effectiveDate.toISOString().slice(0, 10);
-    return prismaClient.customerDiscount.findFirst({
+    return this.prisma.customerDiscount.findFirst({
       where: {
         customerId,
         isActive: true,
@@ -35,15 +39,15 @@ export class PrismaCustomerDiscountsRepository {
     validFrom: string;
     validTo?: string;
   }) {
-    const user = await prismaClient.appUser.findUnique({ where: { email: input.createdByEmail } });
-    if (!user) throw new Error("Usuario no encontrado.");
+    const user = await this.prisma.appUser.findUnique({ where: { email: input.createdByEmail } });
+    if (!user) throw new AppNotFoundError("Usuario no encontrado.");
 
-    if (input.discountPct < 0 || input.discountPct > 100) throw new Error("El porcentaje debe estar entre 0 y 100.");
-    if (input.validTo && input.validTo < input.validFrom) throw new Error("La fecha 'hasta' no puede ser anterior a la fecha 'desde'.");
+    if (input.discountPct < 0 || input.discountPct > 100) throw new AppValidationError("El porcentaje debe estar entre 0 y 100.");
+    if (input.validTo && input.validTo < input.validFrom) throw new AppValidationError("La fecha 'hasta' no puede ser anterior a la fecha 'desde'.");
 
     await this.checkOverlap(input.customerId, input.validFrom, input.validTo ?? null, null);
 
-    return prismaClient.customerDiscount.create({
+    return this.prisma.customerDiscount.create({
       data: {
         customerId: input.customerId,
         discountCode: input.discountCode?.trim() || null,
@@ -64,16 +68,16 @@ export class PrismaCustomerDiscountsRepository {
     validFrom?: string;
     validTo?: string | null;
   }) {
-    const existing = await prismaClient.customerDiscount.findUnique({ where: { id } });
-    if (!existing) throw new Error("Descuento no encontrado.");
+    const existing = await this.prisma.customerDiscount.findUnique({ where: { id } });
+    if (!existing) throw new AppNotFoundError("Descuento no encontrado.");
 
     if (input.discountPct !== undefined && (input.discountPct < 0 || input.discountPct > 100)) {
-      throw new Error("El porcentaje debe estar entre 0 y 100.");
+      throw new AppValidationError("El porcentaje debe estar entre 0 y 100.");
     }
 
     const validFrom = input.validFrom ?? existing.validFrom.toISOString().slice(0, 10);
     const validTo = input.validTo !== undefined ? input.validTo : (existing.validTo?.toISOString().slice(0, 10) ?? null);
-    if (validTo && validTo < validFrom) throw new Error("La fecha 'hasta' no puede ser anterior a la fecha 'desde'.");
+    if (validTo && validTo < validFrom) throw new AppValidationError("La fecha 'hasta' no puede ser anterior a la fecha 'desde'.");
 
     await this.checkOverlap(existing.customerId, validFrom, validTo, id);
 
@@ -84,20 +88,20 @@ export class PrismaCustomerDiscountsRepository {
     if (input.validFrom !== undefined) data.validFrom = new Date(input.validFrom);
     if (input.validTo !== undefined) data.validTo = input.validTo ? new Date(input.validTo) : null;
 
-    return prismaClient.customerDiscount.update({ where: { id }, data });
+    return this.prisma.customerDiscount.update({ where: { id }, data });
   }
 
   async deactivate(id: string) {
-    const existing = await prismaClient.customerDiscount.findUnique({ where: { id } });
-    if (!existing) throw new Error("Descuento no encontrado.");
-    return prismaClient.customerDiscount.update({
+    const existing = await this.prisma.customerDiscount.findUnique({ where: { id } });
+    if (!existing) throw new AppNotFoundError("Descuento no encontrado.");
+    return this.prisma.customerDiscount.update({
       where: { id },
       data: { isActive: false }
     });
   }
 
   private async checkOverlap(customerId: string, validFrom: string, validTo: string | null, excludeId: string | null) {
-    const overlapping = await prismaClient.customerDiscount.findFirst({
+    const overlapping = await this.prisma.customerDiscount.findFirst({
       where: {
         customerId,
         isActive: true,
@@ -110,7 +114,7 @@ export class PrismaCustomerDiscountsRepository {
       }
     });
     if (overlapping) {
-      throw new Error("Ya existe un descuento activo que se solapa con el periodo indicado.");
+      throw new AppConflictError("Ya existe un descuento activo que se solapa con el periodo indicado.");
     }
   }
 }

@@ -1,10 +1,11 @@
-import { Controller, Get, Headers, Query } from "@nestjs/common";
-import { PrismaAuditRepository } from "../../../../shared/infrastructure/persistence/prisma-audit.repository";
-import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
+import { Controller, Get, Query } from "@nestjs/common";
+import { Authenticated } from "../../../../shared/presentation/authenticated.decorator";
+import { ListAuditEntriesUseCase } from "../../application/use-cases/list-audit-entries.use-case";
 
+@Authenticated("superadmin", "admin", "operador")
 @Controller("audit")
 export class AuditController {
-  private readonly repo = new PrismaAuditRepository();
+  constructor(private readonly listAuditEntriesUseCase: ListAuditEntriesUseCase) {}
 
   @Get()
   async list(
@@ -12,13 +13,9 @@ export class AuditController {
     @Query("entityId") entityId?: string,
     @Query("branchCode") branchCode?: string,
     @Query("page") page?: string,
-    @Query("limit") limit?: string,
-    @Headers("authorization") authorization?: string
+    @Query("limit") limit?: string
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-
-    const result = await this.repo.list({
+    const result = await this.listAuditEntriesUseCase.execute({
       entityType,
       entityId,
       branchCode,

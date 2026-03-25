@@ -10,9 +10,17 @@ import {
   Post,
   Query
 } from "@nestjs/common";
-import { Headers } from "@nestjs/common";
-import { PrismaQuoteBatchesRepository } from "../../infrastructure/persistence/prisma/prisma-quote-batches.repository";
-import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
+import type { AuthTokenPayload } from "../../../../shared/infrastructure/auth/token.service";
+import { Authenticated } from "../../../../shared/presentation/authenticated.decorator";
+import { CurrentAuth } from "../../../../shared/presentation/current-auth.decorator";
+import { CancelQuoteBatchUseCase } from "../../application/use-cases/cancel-quote-batch.use-case";
+import { CreateQuoteBatchUseCase } from "../../application/use-cases/create-quote-batch.use-case";
+import { DuplicateQuoteBatchUseCase } from "../../application/use-cases/duplicate-quote-batch.use-case";
+import { FinalizeQuoteBatchUseCase } from "../../application/use-cases/finalize-quote-batch.use-case";
+import { GetQuoteBatchByIdUseCase } from "../../application/use-cases/get-quote-batch-by-id.use-case";
+import { ListQuoteBatchesUseCase } from "../../application/use-cases/list-quote-batches.use-case";
+import { UpdateQuoteBatchUseCase } from "../../application/use-cases/update-quote-batch.use-case";
+import type { PrismaQuoteBatchesRepository } from "../../infrastructure/persistence/prisma/prisma-quote-batches.repository";
 
 type PriceMethodCode = "LINEAR_METER" | "AREA" | "FIXED" | "TABLE_LOOKUP";
 type QuoteBatchStatusCode = "DRAFT" | "FINALIZED" | "EXPIRED" | "CANCELED";
@@ -31,9 +39,18 @@ type LineInput = {
   displayOrder?: number;
 };
 
+@Authenticated("superadmin", "admin", "operador")
 @Controller("quotes/batch")
 export class QuoteBatchesController {
-  private readonly repo = new PrismaQuoteBatchesRepository();
+  constructor(
+    private readonly createQuoteBatchUseCase: CreateQuoteBatchUseCase,
+    private readonly listQuoteBatchesUseCase: ListQuoteBatchesUseCase,
+    private readonly getQuoteBatchByIdUseCase: GetQuoteBatchByIdUseCase,
+    private readonly updateQuoteBatchUseCase: UpdateQuoteBatchUseCase,
+    private readonly duplicateQuoteBatchUseCase: DuplicateQuoteBatchUseCase,
+    private readonly finalizeQuoteBatchUseCase: FinalizeQuoteBatchUseCase,
+    private readonly cancelQuoteBatchUseCase: CancelQuoteBatchUseCase
+  ) {}
 
   @Post()
   @HttpCode(HttpStatus.OK)
@@ -49,13 +66,11 @@ export class QuoteBatchesController {
       installationAmount?: number;
       lines: LineInput[];
     },
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     try {
-      const batch = await this.repo.create({ ...body, createdByEmail: auth.email });
-      return { id: batch.id, status: batch.status };
+      const batch = await this.createQuoteBatchUseCase.execute({ ...body, createdByEmail: auth.email });
+      return { id: batch.id, status: batch.status, quoteCode: batch.quoteNumber > 0 ? `COT-${batch.quoteNumber}` : null };
     } catch (error) {
       throw new BadRequestException(msg(error));
     }
@@ -70,12 +85,9 @@ export class QuoteBatchesController {
     @Query("from") from?: string,
     @Query("to") to?: string,
     @Query("page") page?: string,
-    @Query("limit") limit?: string,
-    @Headers("authorization") authorization?: string
+    @Query("limit") limit?: string
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const result = await this.repo.list(branchCode, {
+    const result = await this.listQuoteBatchesUseCase.execute(branchCode, {
       status: status as QuoteBatchStatusCode | undefined,
       customerName,
       customerReference,
@@ -94,13 +106,8 @@ export class QuoteBatchesController {
   }
 
   @Get(":id")
-  async findOne(
-    @Param("id") id: string,
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    const batch = await this.repo.findById(id);
+  async findOne(@Param("id") id: string) {
+    const batch = await this.getQuoteBatchByIdUseCase.execute(id);
     if (!batch) throw new BadRequestException("Cotización no encontrada.");
     return serializeBatch(batch);
   }
@@ -117,12 +124,10 @@ export class QuoteBatchesController {
       installationAmount?: number;
       lines?: LineInput[];
     },
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     try {
-      await this.repo.update(id, auth.email, body);
+      await this.updateQuoteBatchUseCase.execute(id, auth.email, body);
       return { ok: true };
     } catch (error) {
       throw new BadRequestException(msg(error));
@@ -131,15 +136,10 @@ export class QuoteBatchesController {
 
   @Post(":id/duplicate")
   @HttpCode(HttpStatus.OK)
-  async duplicate(
-    @Param("id") id: string,
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+  async duplicate(@Param("id") id: string, @CurrentAuth() auth: AuthTokenPayload) {
     try {
-      const copy = await this.repo.duplicate(id, auth.email);
-      return { id: copy.id, status: copy.status };
+      const copy = await this.duplicateQuoteBatchUseCase.execute(id, auth.email);
+      return { id: copy.id, status: copy.status, quoteCode: copy.quoteNumber > 0 ? `COT-${copy.quoteNumber}` : null };
     } catch (error) {
       throw new BadRequestException(msg(error));
     }
@@ -147,14 +147,9 @@ export class QuoteBatchesController {
 
   @Post(":id/finalize")
   @HttpCode(HttpStatus.OK)
-  async finalize(
-    @Param("id") id: string,
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+  async finalize(@Param("id") id: string, @CurrentAuth() auth: AuthTokenPayload) {
     try {
-      await this.repo.finalize(id, auth.email);
+      await this.finalizeQuoteBatchUseCase.execute(id, auth.email);
       return { ok: true };
     } catch (error) {
       throw new BadRequestException(msg(error));
@@ -163,14 +158,9 @@ export class QuoteBatchesController {
 
   @Post(":id/cancel")
   @HttpCode(HttpStatus.OK)
-  async cancel(
-    @Param("id") id: string,
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
+  async cancel(@Param("id") id: string, @CurrentAuth() auth: AuthTokenPayload) {
     try {
-      await this.repo.cancel(id, auth.email);
+      await this.cancelQuoteBatchUseCase.execute(id, auth.email);
       return { ok: true };
     } catch (error) {
       throw new BadRequestException(msg(error));
@@ -189,6 +179,8 @@ function serializeBatch(b: NonNullable<BatchRow> | BatchListRow) {
   const amountPaidPct = totalAmount > 0 ? Number(((amountPaid / totalAmount) * 100).toFixed(1)) : 0;
   return {
     id: b.id,
+    quoteNumber: b.quoteNumber,
+    quoteCode: b.quoteNumber > 0 ? `COT-${b.quoteNumber}` : null,
     status: b.status,
     priceListName: b.priceList.name,
     customerId: b.customerId,

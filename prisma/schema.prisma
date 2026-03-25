@@ -448,6 +448,7 @@ model QuoteBatch {
   id                String           @id @default(uuid()) @db.Uuid
   branchId          String           @map("branch_id") @db.Uuid
   createdBy         String           @map("created_by") @db.Uuid
+  quoteNumber       Int              @default(0) @map("quote_number")
   priceListId       String           @map("price_list_id") @db.Uuid
   customerId        String?          @map("customer_id") @db.Uuid
   customerName      String?          @map("customer_name") @db.VarChar(160)
@@ -485,6 +486,7 @@ model QuoteBatchLine {
   priceMethod      PriceMethod      @default(LINEAR_METER) @map("price_method")
   categoryId       String?          @map("category_id") @db.Uuid
   lineNote         String?          @map("line_note")
+  roomAreaName     String?          @map("room_area_name") @db.VarChar(120)
   displayOrder     Int              @default(0) @map("display_order")
 
   quoteBatch QuoteBatch         @relation(fields: [quoteBatchId], references: [id], onDelete: Cascade)

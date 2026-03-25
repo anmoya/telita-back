@@ -1,32 +1,30 @@
-import { Controller, Get, Headers, Query } from "@nestjs/common";
-import { PrismaDashboardRepository } from "../../infrastructure/persistence/prisma/prisma-dashboard.repository";
-import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
+import { Controller, Get, Query } from "@nestjs/common";
+import { Authenticated } from "../../../../shared/presentation/authenticated.decorator";
+import { GetDashboardKpisUseCase } from "../../application/use-cases/get-dashboard-kpis.use-case";
+import { GetPendingScrapsUseCase } from "../../application/use-cases/get-pending-scraps.use-case";
 
+@Authenticated("superadmin", "admin", "operador")
 @Controller("dashboard")
 export class DashboardController {
-  private readonly repo = new PrismaDashboardRepository();
+  constructor(
+    private readonly getDashboardKpisUseCase: GetDashboardKpisUseCase,
+    private readonly getPendingScrapsUseCase: GetPendingScrapsUseCase
+  ) {}
 
   @Get("kpis")
   async getKpis(
     @Query("branchCode") branchCode = "MAIN",
-    @Query("date") date?: string,
-    @Headers("authorization") authorization?: string
+    @Query("date") date?: string
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    return this.repo.getKpis({ branchCode, date });
+    return this.getDashboardKpisUseCase.execute({ branchCode, date });
   }
 
   @Get("pending-scraps")
   async pendingScraps(
     @Query("branchCode") branchCode = "MAIN",
-    @Query("limit") limit?: string,
-    @Headers("authorization") authorization?: string
+    @Query("limit") limit?: string
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-
-    const rows = await this.repo.getPendingScraps({
+    const rows = await this.getPendingScrapsUseCase.execute({
       branchCode,
       limit: limit ? Number(limit) : undefined
     });

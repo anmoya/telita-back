@@ -4,41 +4,37 @@ import {
   Controller,
   Delete,
   Get,
-  Headers,
   Param,
   Patch,
   Post,
   Query
 } from "@nestjs/common";
-import { PrismaScrapsRepository } from "../../infrastructure/persistence/prisma/prisma-scraps.repository";
-import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
+import type { AuthTokenPayload } from "../../../../shared/infrastructure/auth/token.service";
+import { Authenticated } from "../../../../shared/presentation/authenticated.decorator";
+import { CurrentAuth } from "../../../../shared/presentation/current-auth.decorator";
+import { ScrapsOperationsService } from "../../application/services/scraps-operations.service";
 
+@Authenticated("superadmin", "admin", "operador")
 @Controller("scraps")
 export class ScrapsController {
-  private readonly repo = new PrismaScrapsRepository();
+  constructor(private readonly scrapsOperations: ScrapsOperationsService) {}
 
   @Post("register-from-quote")
   async registerFromQuote(
     @Body() body: { quoteId: string; generatedByEmail?: string },
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const scrap = await this.repo.registerFromQuote({
-        quoteId: body.quoteId,
-        generatedByEmail: auth.email
-      });
-      return {
-        id: scrap.id,
-        status: scrap.status,
-        areaM2: Number(scrap.areaM2),
-        widthM: Number(scrap.widthM),
-        heightM: Number(scrap.heightM)
-      };
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+    const scrap = await this.scrapsOperations.registerFromQuote({
+      quoteId: body.quoteId,
+      generatedByEmail: auth.email
+    });
+    return {
+      id: scrap.id,
+      status: scrap.status,
+      areaM2: Number(scrap.areaM2),
+      widthM: Number(scrap.widthM),
+      heightM: Number(scrap.heightM)
+    };
   }
 
   @Get("match")
@@ -47,15 +43,12 @@ export class ScrapsController {
     @Query("skuCode") skuCode: string,
     @Query("requestedWidthM") requestedWidthM: string,
     @Query("requestedHeightM") requestedHeightM: string,
-    @Query("limit") limit?: string,
-    @Headers("authorization") authorization?: string
+    @Query("limit") limit?: string
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     if (!skuCode || !requestedWidthM || !requestedHeightM) {
       throw new BadRequestException("skuCode, requestedWidthM and requestedHeightM are required.");
     }
-    const results = await this.repo.match({
+    const results = await this.scrapsOperations.match({
       branchCode,
       skuCode,
       requestedWidthM: Number(requestedWidthM),
@@ -85,16 +78,13 @@ export class ScrapsController {
         requestedHeightM: number;
         quantity: number;
       }>;
-    },
-    @Headers("authorization") authorization?: string
+    }
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     if (!body.items?.length) {
       throw new BadRequestException("items is required.");
     }
 
-    const result = await this.repo.previewQuoteOpportunity({
+    const result = await this.scrapsOperations.previewQuoteOpportunity({
       branchCode: body.branchCode ?? "MAIN",
       items: body.items
     });
@@ -111,15 +101,12 @@ export class ScrapsController {
     @Query("status") status?: string,
     @Query("quoteCode") quoteCode?: string,
     @Query("page") page?: string,
-    @Query("limit") limit?: string,
-    @Headers("authorization") authorization?: string
+    @Query("limit") limit?: string
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     const typedStatus = status ? status.toUpperCase() : undefined;
     const rawNumber = quoteCode ? parseInt(quoteCode.replace(/^COT-/i, ""), 10) : NaN;
     const quoteNumber = Number.isFinite(rawNumber) && rawNumber > 0 ? rawNumber : undefined;
-    const result = await this.repo.list({
+    const result = await this.scrapsOperations.list({
       branchCode,
       status: typedStatus,
       quoteNumber,
@@ -150,20 +137,14 @@ export class ScrapsController {
   async assignLocation(
     @Param("id") id: string,
     @Body() body: { locationCode: string; classifiedByEmail?: string },
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const scrap = await this.repo.assignLocation({
-        scrapId: id,
-        locationCode: body.locationCode,
-        classifiedByEmail: auth.email
-      });
-      return { id: scrap.id, status: scrap.status, locationId: scrap.locationId };
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+    const scrap = await this.scrapsOperations.assignLocation({
+      scrapId: id,
+      locationCode: body.locationCode,
+      classifiedByEmail: auth.email
+    });
+    return { id: scrap.id, status: scrap.status, locationId: scrap.locationId };
   }
 
   // SPEC-58: Soft hold endpoints
@@ -171,33 +152,22 @@ export class ScrapsController {
   async createSoftHold(
     @Param("id") id: string,
     @Body() body: { saleId: string; saleLineId?: string; saleLinePieceId?: string; minutes?: number; reason?: string },
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const result = await this.repo.createSoftHold({
-        scrapId: id,
-        saleId: body.saleId,
-        saleLineId: body.saleLineId,
-        saleLinePieceId: body.saleLinePieceId,
-        heldByEmail: auth.email,
-        minutes: body.minutes ?? 15,
-        reason: body.reason
-      });
-      return result;
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+    return this.scrapsOperations.createSoftHold({
+      scrapId: id,
+      saleId: body.saleId,
+      saleLineId: body.saleLineId,
+      saleLinePieceId: body.saleLinePieceId,
+      heldByEmail: auth.email,
+      minutes: body.minutes ?? 15,
+      reason: body.reason
+    });
   }
 
   @Get(":id/soft-hold")
-  async getActiveSoftHold(
-    @Param("id") id: string,
-    @Headers("authorization") authorization?: string
-  ) {
-    requireAuth(authorization);
-    const hold = await this.repo.getActiveSoftHold(id);
+  async getActiveSoftHold(@Param("id") id: string) {
+    const hold = await this.scrapsOperations.getActiveSoftHold(id);
     if (!hold) return { active: false };
     return {
       active: true,
@@ -215,17 +185,8 @@ export class ScrapsController {
   }
 
   @Delete(":id/soft-hold")
-  async releaseSoftHold(
-    @Param("id") id: string,
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      await this.repo.releaseSoftHold({ scrapId: id, releasedByEmail: auth.email });
-      return { ok: true };
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+  async releaseSoftHold(@Param("id") id: string, @CurrentAuth() auth: AuthTokenPayload) {
+    await this.scrapsOperations.releaseSoftHold({ scrapId: id, releasedByEmail: auth.email });
+    return { ok: true };
   }
 }

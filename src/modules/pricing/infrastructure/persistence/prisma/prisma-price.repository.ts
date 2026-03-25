@@ -1,46 +1,39 @@
 import { Injectable } from "@nestjs/common";
 import { AuditAction, PrismaClient } from "@prisma/client";
-import type { PriceRepositoryPort } from "../../../application/ports/price-repository.port";
+import type { PriceCellRepositoryPort, QuoteContextResolution, QuoteRepositoryPort } from "../../../application/ports/price-repository.port";
+import { AppNotFoundError } from "../../../../../shared/application/errors/app-error";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 
 @Injectable()
-export class PrismaPriceRepository implements PriceRepositoryPort {
-  private readonly auditRepo = new PrismaAuditRepository();
-
-  constructor(private readonly prisma: PrismaClient) {}
+export class PrismaPriceRepository implements QuoteRepositoryPort, PriceCellRepositoryPort {
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly auditRepo: PrismaAuditRepository
+  ) {}
 
   async getQuoteContext(params: {
     branchCode: string;
     createdByEmail: string;
     skuCode: string;
     priceListName: string;
-  }): Promise<{
-    branchId: string;
-    createdBy: string;
-    skuId: string;
-    priceListId: string;
-    currencyCode: string;
-    skuWidthM: number;
-    unitPrice: number;
-    discountPct: number;
-  } | null> {
+  }): Promise<QuoteContextResolution> {
     const branch = await this.prisma.branch.findUnique({
       where: { code: params.branchCode },
       select: { id: true }
     });
-    if (!branch) return null;
+    if (!branch) return { ok: false, reason: "BRANCH_NOT_FOUND" };
 
     const user = await this.prisma.appUser.findUnique({
       where: { email: params.createdByEmail },
       select: { id: true }
     });
-    if (!user) return null;
+    if (!user) return { ok: false, reason: "USER_NOT_FOUND" };
 
     const sku = await this.prisma.fabricSku.findFirst({
       where: { branchId: branch.id, code: params.skuCode, isActive: true },
       select: { id: true, widthValue: true }
     });
-    if (!sku) return null;
+    if (!sku) return { ok: false, reason: "SKU_NOT_FOUND" };
 
     const priceList = await this.prisma.priceList.findFirst({
       where: {
@@ -50,7 +43,7 @@ export class PrismaPriceRepository implements PriceRepositoryPort {
       },
       select: { id: true, currencyCode: true }
     });
-    if (!priceList) return null;
+    if (!priceList) return { ok: false, reason: "PRICE_LIST_NOT_FOUND" };
 
     const item = await this.prisma.priceListItem.findFirst({
       where: {
@@ -62,9 +55,10 @@ export class PrismaPriceRepository implements PriceRepositoryPort {
         discountPct: true
       }
     });
-    if (!item) return null;
+    if (!item) return { ok: false, reason: "SKU_NOT_IN_PRICE_LIST" };
 
     return {
+      ok: true,
       branchId: branch.id,
       createdBy: user.id,
       skuId: sku.id,
@@ -287,7 +281,7 @@ export class PrismaPriceRepository implements PriceRepositoryPort {
       select: { branchId: true }
     });
     if (!priceList) {
-      throw new Error("Lista de precios no encontrada");
+      throw new AppNotFoundError("Lista de precios no encontrada");
     }
 
     const sku = await this.prisma.fabricSku.findFirst({
@@ -295,7 +289,7 @@ export class PrismaPriceRepository implements PriceRepositoryPort {
       select: { id: true }
     });
     if (!sku) {
-      throw new Error("SKU no encontrado");
+      throw new AppNotFoundError("SKU no encontrado");
     }
 
     return this.createCell({

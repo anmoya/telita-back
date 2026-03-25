@@ -1,5 +1,7 @@
-import type { ClockPort } from "../../../../shared/application/ports/clock.port";
-import type { PriceRepositoryPort } from "../ports/price-repository.port";
+import { Inject, Injectable } from "@nestjs/common";
+import { AppNotFoundError, AppValidationError } from "../../../../shared/application/errors/app-error";
+import { SystemClockService } from "../../../../shared/infrastructure/time/system-clock.service";
+import { PRICE_CELL_REPOSITORY, QUOTE_REPOSITORY, type PriceCellRepositoryPort, type QuoteRepositoryPort } from "../ports/price-repository.port";
 
 export interface CalculateQuoteInput {
   branchCode: string;
@@ -21,32 +23,36 @@ export interface CalculateQuoteOutput {
   priceMethod: "LINEAR_METER" | "TABLE_LOOKUP";
 }
 
+@Injectable()
 export class CalculateQuoteUseCase {
   constructor(
-    private readonly clock: ClockPort,
-    private readonly priceRepository: PriceRepositoryPort
+    private readonly clock: SystemClockService,
+    @Inject(QUOTE_REPOSITORY)
+    private readonly quoteRepository: QuoteRepositoryPort,
+    @Inject(PRICE_CELL_REPOSITORY)
+    private readonly priceCellRepository: PriceCellRepositoryPort
   ) {}
 
   async execute(input: CalculateQuoteInput): Promise<CalculateQuoteOutput> {
-    const context = await this.priceRepository.getQuoteContext({
+    const context = await this.quoteRepository.getQuoteContext({
       branchCode: input.branchCode,
       createdByEmail: input.createdByEmail,
       skuCode: input.skuCode,
       priceListName: input.priceListName
     });
-    if (!context) {
-      throw new Error("Contexto de cotización no encontrado (sucursal/usuario/SKU/lista de precios).");
+    if (!context.ok) {
+      throw new AppNotFoundError(resolveQuoteContextMessage(input.skuCode, input.priceListName, context.reason));
     }
 
-    if (input.requestedWidthM > context.skuWidthM) {
-      throw new Error("El ancho solicitado supera el ancho del SKU.");
+    if (context.skuWidthM > 0 && input.requestedWidthM > context.skuWidthM) {
+      throw new AppValidationError("El ancho solicitado supera el ancho del SKU.");
     }
     if (input.requestedHeightM <= 0 || input.requestedWidthM <= 0 || input.quantity <= 0) {
-      throw new Error("Dimensiones o cantidad inválidas.");
+      throw new AppValidationError("Dimensiones o cantidad inválidas.");
     }
 
     // SPEC-31: Try to find cell for TABLE_LOOKUP
-    const cellPrice = await this.priceRepository.getCellPrice({
+    const cellPrice = await this.priceCellRepository.getCellPrice({
       priceListId: context.priceListId,
       skuId: context.skuId,
       requestedWidthM: input.requestedWidthM,
@@ -74,7 +80,7 @@ export class CalculateQuoteUseCase {
     const subtotal = roundCurrency(grossSubtotal * (1 - context.discountPct / 100));
     const totalRounded = roundClpCash(subtotal);
 
-    const { quoteId } = await this.priceRepository.saveQuote({
+    const { quoteId } = await this.quoteRepository.saveQuote({
       branchId: context.branchId,
       createdBy: context.createdBy,
       skuId: context.skuId,
@@ -100,6 +106,19 @@ export class CalculateQuoteUseCase {
       priceMethod
     };
   }
+}
+
+function resolveQuoteContextMessage(skuCode: string, priceListName: string, reason: string) {
+  if (reason === "SKU_NOT_IN_PRICE_LIST") {
+    return `El SKU ${skuCode} existe, pero no está agregado a la lista de precios seleccionada (${priceListName}).`;
+  }
+  if (reason === "SKU_NOT_FOUND") {
+    return `El SKU ${skuCode} no existe o está inactivo en la sucursal seleccionada.`;
+  }
+  if (reason === "PRICE_LIST_NOT_FOUND") {
+    return `La lista de precios seleccionada (${priceListName}) no existe o está inactiva.`;
+  }
+  return "No se pudo resolver el contexto de cotización.";
 }
 
 function roundClpCash(value: number): number {

@@ -1,11 +1,42 @@
 import { Injectable } from "@nestjs/common";
-import { AuditAction, Prisma } from "@prisma/client";
-import { prismaClient } from "./prisma-client";
+import { AuditAction, Prisma, PrismaClient } from "@prisma/client";
 
 export type AuditActionCode = "CREATE" | "UPDATE" | "DELETE" | "STATUS_CHANGE" | "PRINT";
 
 @Injectable()
 export class PrismaAuditRepository {
+  constructor(private readonly prisma: PrismaClient) {}
+
+  async logByActorEmail(input: {
+    actorEmail: string;
+    branchId?: string | null;
+    entityType: string;
+    entityId: string;
+    action: AuditActionCode;
+    beforeJson?: unknown;
+    afterJson?: unknown;
+  }) {
+    const actor = await this.prisma.appUser.findUnique({
+      where: { email: input.actorEmail },
+      select: { id: true }
+    });
+    if (!actor) {
+      return false;
+    }
+
+    await this.log({
+      branchId: input.branchId,
+      actorUserId: actor.id,
+      entityType: input.entityType,
+      entityId: input.entityId,
+      action: input.action,
+      beforeJson: input.beforeJson,
+      afterJson: input.afterJson
+    });
+
+    return true;
+  }
+
   async log(input: {
     branchId?: string | null;
     actorUserId: string;
@@ -15,7 +46,7 @@ export class PrismaAuditRepository {
     beforeJson?: unknown;
     afterJson?: unknown;
   }) {
-    await prismaClient.auditLog.create({
+    await this.prisma.auditLog.create({
       data: {
         branchId: input.branchId ?? null,
         actorUserId: input.actorUserId,
@@ -46,14 +77,14 @@ export class PrismaAuditRepository {
     };
 
     const [data, total] = await Promise.all([
-      prismaClient.auditLog.findMany({
+      this.prisma.auditLog.findMany({
         where,
         orderBy: { createdAt: "desc" },
         skip,
         take: limit,
         include: { actor: { select: { email: true, fullName: true, role: true } } }
       }),
-      prismaClient.auditLog.count({ where })
+      this.prisma.auditLog.count({ where })
     ]);
 
     return { data, total, page, limit, totalPages: Math.ceil(total / limit) };

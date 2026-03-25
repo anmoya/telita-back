@@ -1,15 +1,19 @@
-import { AuditAction } from "@prisma/client";
-import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
+import { Injectable } from "@nestjs/common";
+import { AuditAction, PrismaClient } from "@prisma/client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 
+@Injectable()
 export class PrismaQuoteItemCategoriesRepository {
-  private readonly auditRepo = new PrismaAuditRepository();
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly auditRepo: PrismaAuditRepository
+  ) {}
 
   async list(params: { branchCode: string; isActive?: boolean }) {
-    const branch = await prismaClient.branch.findUnique({ where: { code: params.branchCode } });
+    const branch = await this.prisma.branch.findUnique({ where: { code: params.branchCode } });
     if (!branch) throw new Error("Sucursal no encontrada.");
 
-    return prismaClient.quoteItemCategory.findMany({
+    return this.prisma.quoteItemCategory.findMany({
       where: {
         branchId: branch.id,
         ...(params.isActive !== undefined ? { isActive: params.isActive } : {})
@@ -19,19 +23,19 @@ export class PrismaQuoteItemCategoriesRepository {
   }
 
   async create(input: { branchCode: string; name: string; createdByEmail: string }) {
-    const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
-    const createdBy = await prismaClient.appUser.findUnique({ where: { email: input.createdByEmail } });
+    const branch = await this.prisma.branch.findUnique({ where: { code: input.branchCode } });
+    const createdBy = await this.prisma.appUser.findUnique({ where: { email: input.createdByEmail } });
     if (!branch || !createdBy) throw new Error("Sucursal o usuario no encontrado.");
 
     const normalizedName = input.name.trim().toUpperCase();
     if (!normalizedName) throw new Error("El nombre de la categoría es obligatorio.");
 
-    const existing = await prismaClient.quoteItemCategory.findFirst({
+    const existing = await this.prisma.quoteItemCategory.findFirst({
       where: { branchId: branch.id, name: { equals: normalizedName, mode: "insensitive" } }
     });
     if (existing) throw new Error("La categoría ya existe en esta sucursal.");
 
-    const category = await prismaClient.quoteItemCategory.create({
+    const category = await this.prisma.quoteItemCategory.create({
       data: {
         branchId: branch.id,
         name: normalizedName,
@@ -53,17 +57,17 @@ export class PrismaQuoteItemCategoriesRepository {
   }
 
   async update(input: { id: string; name?: string; isActive?: boolean; updatedByEmail: string }) {
-    const updatedBy = await prismaClient.appUser.findUnique({ where: { email: input.updatedByEmail } });
+    const updatedBy = await this.prisma.appUser.findUnique({ where: { email: input.updatedByEmail } });
     if (!updatedBy) throw new Error("Usuario no encontrado.");
 
-    const category = await prismaClient.quoteItemCategory.findUnique({ where: { id: input.id } });
+    const category = await this.prisma.quoteItemCategory.findUnique({ where: { id: input.id } });
     if (!category) throw new Error("Categoría no encontrada.");
 
     const updateData: { name?: string; isActive?: boolean } = {};
     if (input.name !== undefined) {
       const normalizedName = input.name.trim().toUpperCase();
       if (!normalizedName) throw new Error("El nombre de la categoría es obligatorio.");
-      const conflict = await prismaClient.quoteItemCategory.findFirst({
+      const conflict = await this.prisma.quoteItemCategory.findFirst({
         where: {
           branchId: category.branchId,
           name: { equals: normalizedName, mode: "insensitive" },
@@ -77,7 +81,7 @@ export class PrismaQuoteItemCategoriesRepository {
       updateData.isActive = input.isActive;
     }
 
-    const updated = await prismaClient.quoteItemCategory.update({
+    const updated = await this.prisma.quoteItemCategory.update({
       where: { id: input.id },
       data: updateData
     });
@@ -97,15 +101,15 @@ export class PrismaQuoteItemCategoriesRepository {
 
   async findOrCreate(input: { branchId: string; name: string; createdByEmail: string }) {
     const normalizedName = input.name.trim().toUpperCase();
-    const existing = await prismaClient.quoteItemCategory.findFirst({
+    const existing = await this.prisma.quoteItemCategory.findFirst({
       where: { branchId: input.branchId, name: { equals: normalizedName, mode: "insensitive" } }
     });
     if (existing) return existing;
 
-    const createdBy = await prismaClient.appUser.findUnique({ where: { email: input.createdByEmail } });
+    const createdBy = await this.prisma.appUser.findUnique({ where: { email: input.createdByEmail } });
     if (!createdBy) throw new Error("Usuario no encontrado.");
 
-    const category = await prismaClient.quoteItemCategory.create({
+    const category = await this.prisma.quoteItemCategory.create({
       data: {
         branchId: input.branchId,
         name: normalizedName,

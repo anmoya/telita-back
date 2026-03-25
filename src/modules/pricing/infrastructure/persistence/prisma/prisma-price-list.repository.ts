@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { PrismaClient, SaleStatus } from "@prisma/client";
+import { AppNotFoundError } from "../../../../../shared/application/errors/app-error";
 import type { PriceListRepositoryPort } from "../../../application/ports/price-list-repository.port";
 
 @Injectable()
@@ -80,7 +81,7 @@ export class PrismaPriceListRepository implements PriceListRepositoryPort {
       where: { code: params.branchCode },
       select: { id: true }
     });
-    if (!branch) throw new Error("Sucursal no encontrada");
+    if (!branch) throw new AppNotFoundError("Sucursal no encontrada");
 
     const priceList = await this.prisma.priceList.create({
       data: {
@@ -113,7 +114,7 @@ export class PrismaPriceListRepository implements PriceListRepositoryPort {
       where: { id },
       select: { isActive: true }
     });
-    if (!priceList) throw new Error("Lista de precios no encontrada");
+    if (!priceList) throw new AppNotFoundError("Lista de precios no encontrada");
 
     const newStatus = !priceList.isActive;
 

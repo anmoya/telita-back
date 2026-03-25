@@ -1,28 +1,26 @@
-import { BadRequestException, Body, Controller, Delete, Get, Headers, Param, Patch, Post, Put, Query } from "@nestjs/common";
-import { PrismaScrapsRepository } from "../../infrastructure/persistence/prisma/prisma-scraps.repository";
-import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
+import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query } from "@nestjs/common";
+import type { AuthTokenPayload } from "../../../../shared/infrastructure/auth/token.service";
+import { Authenticated } from "../../../../shared/presentation/authenticated.decorator";
+import { CurrentAuth } from "../../../../shared/presentation/current-auth.decorator";
+import { Roles } from "../../../../shared/presentation/roles.decorator";
+import { StorageLocationsService } from "../../application/services/storage-locations.service";
 
+@Authenticated("superadmin", "admin", "operador")
 @Controller("storage-locations")
 export class StorageLocationsController {
-  private readonly repo = new PrismaScrapsRepository();
+  constructor(private readonly storageLocationsService: StorageLocationsService) {}
 
   @Get()
   async list(
     @Query("branchCode") branchCode: string,
     @Query("page") page?: string,
-    @Query("limit") limit?: string,
-    @Headers("authorization") authorization?: string
+    @Query("limit") limit?: string
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      return await this.repo.listStorageLocations(branchCode, page ? Number(page) : 1, limit ? Number(limit) : 50);
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+    return this.storageLocationsService.list(branchCode, page ? Number(page) : 1, limit ? Number(limit) : 50);
   }
 
   @Post("bulk-create")
+  @Roles("superadmin", "admin")
   async bulkCreate(
     @Body()
     body: {
@@ -35,18 +33,13 @@ export class StorageLocationsController {
       separator: string;
       descriptionTemplate?: string;
     },
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
-    try {
-      return await this.repo.bulkCreateStorageLocations({ ...body, createdByEmail: auth.email });
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+    return this.storageLocationsService.bulkCreate({ ...body, createdByEmail: auth.email });
   }
 
   @Post("bulk-preview")
+  @Roles("superadmin", "admin")
   async bulkPreview(
     @Body()
     body: {
@@ -58,90 +51,60 @@ export class StorageLocationsController {
       colEnd: number;
       separator: string;
       descriptionTemplate?: string;
-    },
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
-    try {
-      return await this.repo.bulkPreviewStorageLocations(body);
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
     }
+  ) {
+    return this.storageLocationsService.bulkPreview(body);
   }
 
   @Post()
-  async create(
-    @Body() body: { branchCode: string; code: string; description?: string },
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
-    try {
-      const location = await this.repo.createStorageLocation({
-        ...body,
-        createdByEmail: auth.email
-      });
-      return {
-        id: location.id,
-        code: location.code,
-        description: location.description,
-        isActive: location.isActive
-      };
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+  @Roles("superadmin", "admin")
+  async create(@Body() body: { branchCode: string; code: string; description?: string }, @CurrentAuth() auth: AuthTokenPayload) {
+    const location = await this.storageLocationsService.create({
+      ...body,
+      createdByEmail: auth.email
+    });
+    return {
+      id: location.id,
+      code: location.code,
+      description: location.description,
+      isActive: location.isActive
+    };
   }
 
   @Put(":id")
+  @Roles("superadmin", "admin")
   async update(
     @Param("id") id: string,
     @Body() body: { code?: string; description?: string },
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
-    try {
-      const location = await this.repo.updateStorageLocation(id, {
-        ...body,
-        actorEmail: auth.email
-      });
-      return {
-        id: location.id,
-        code: location.code,
-        description: location.description,
-        isActive: location.isActive
-      };
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+    const location = await this.storageLocationsService.update(id, {
+      ...body,
+      actorEmail: auth.email
+    });
+    return {
+      id: location.id,
+      code: location.code,
+      description: location.description,
+      isActive: location.isActive
+    };
   }
 
   @Delete(":id")
-  async delete(@Param("id") id: string, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
-    try {
-      await this.repo.deleteStorageLocation(id, auth.email);
-      return { ok: true };
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+  @Roles("superadmin", "admin")
+  async delete(@Param("id") id: string, @CurrentAuth() auth: AuthTokenPayload) {
+    await this.storageLocationsService.delete(id, auth.email);
+    return { ok: true };
   }
 
   @Patch(":id/status")
-  async toggleStatus(@Param("id") id: string, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
-    try {
-      const location = await this.repo.toggleStorageLocationStatus(id, auth.email);
-      return {
-        id: location.id,
-        code: location.code,
-        isActive: location.isActive
-      };
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+  @Roles("superadmin", "admin")
+  async toggleStatus(@Param("id") id: string, @CurrentAuth() auth: AuthTokenPayload) {
+    const location = await this.storageLocationsService.toggleStatus(id, auth.email);
+    return {
+      id: location.id,
+      code: location.code,
+      isActive: location.isActive
+    };
   }
 }

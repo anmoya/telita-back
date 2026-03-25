@@ -1,10 +1,7 @@
-import { AuditAction, PriceMethod, Prisma, QuoteBatchStatus } from "@prisma/client";
-import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
+import { Injectable } from "@nestjs/common";
+import { AuditAction, PriceMethod, Prisma, PrismaClient, QuoteBatchStatus } from "@prisma/client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 import { PrismaQuoteItemCategoriesRepository } from "../../../../quote-item-categories/infrastructure/persistence/prisma/prisma-quote-item-categories.repository";
-
-const auditRepo = new PrismaAuditRepository();
-const categoriesRepo = new PrismaQuoteItemCategoriesRepository();
 
 type LineInput = {
   skuCode: string;
@@ -17,10 +14,18 @@ type LineInput = {
   categoryId?: string | null;
   categoryName?: string;
   lineNote?: string;
+  roomAreaName?: string;
   displayOrder?: number;
 };
 
+@Injectable()
 export class PrismaQuoteBatchesRepository {
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly auditRepo: PrismaAuditRepository,
+    private readonly categoriesRepo: PrismaQuoteItemCategoriesRepository
+  ) {}
+
   async create(input: {
     branchCode: string;
     createdByEmail: string;
@@ -33,11 +38,11 @@ export class PrismaQuoteBatchesRepository {
     installationAmount?: number;
     lines: LineInput[];
   }) {
-    const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
-    const user = await prismaClient.appUser.findUnique({ where: { email: input.createdByEmail } });
+    const branch = await this.prisma.branch.findUnique({ where: { code: input.branchCode } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: input.createdByEmail } });
     if (!branch || !user) throw new Error("Sucursal o usuario no encontrado.");
 
-    const priceList = await prismaClient.priceList.findFirst({
+    const priceList = await this.prisma.priceList.findFirst({
       where: { branchId: branch.id, name: input.priceListName, isActive: true }
     });
     if (!priceList) throw new Error("Lista de precios no encontrada.");
@@ -52,11 +57,14 @@ export class PrismaQuoteBatchesRepository {
     const amountPaid = Math.max(input.amountPaid ?? 0, 0);
     if (amountPaid > total) throw new Error("El abono no puede superar el total.");
 
-    const batch = await prismaClient.$transaction(async (tx) => {
+    const batch = await this.prisma.$transaction(async (tx) => {
+      const quoteNumber = await getNextDocumentNumberTx(tx, branch.id);
+
       const newBatch = await tx.quoteBatch.create({
         data: {
           branchId: branch.id,
           createdBy: user.id,
+          quoteNumber,
           priceListId: priceList.id,
           customerId: input.customerId ?? null,
           customerName: input.customerName,
@@ -84,6 +92,7 @@ export class PrismaQuoteBatchesRepository {
             priceMethod: line.priceMethod,
             categoryId: line.categoryId ?? null,
             lineNote: line.lineNote ?? null,
+            roomAreaName: line.roomAreaName?.trim() || null,
             displayOrder: line.displayOrder
           }
         });
@@ -91,13 +100,13 @@ export class PrismaQuoteBatchesRepository {
       return newBatch;
     });
 
-    await auditRepo.log({
+    await this.auditRepo.log({
       branchId: branch.id,
       actorUserId: user.id,
       entityType: "quote_batch",
       entityId: batch.id,
       action: AuditAction.CREATE,
-      afterJson: { status: batch.status, linesCount: resolvedLines.length, totalAmount: total }
+      afterJson: { status: batch.status, linesCount: resolvedLines.length, totalAmount: total, quoteNumber: batch.quoteNumber }
     });
 
     return batch;
@@ -136,7 +145,7 @@ export class PrismaQuoteBatchesRepository {
     };
 
     const [data, total] = await Promise.all([
-      prismaClient.quoteBatch.findMany({
+      this.prisma.quoteBatch.findMany({
         where,
         include: {
           createdByUser: { select: { email: true, fullName: true } },
@@ -153,7 +162,7 @@ export class PrismaQuoteBatchesRepository {
         skip,
         take: limit
       }),
-      prismaClient.quoteBatch.count({ where })
+      this.prisma.quoteBatch.count({ where })
     ]);
 
     return {
@@ -166,7 +175,7 @@ export class PrismaQuoteBatchesRepository {
   }
 
   async findById(id: string) {
-    return prismaClient.quoteBatch.findUnique({
+    return this.prisma.quoteBatch.findUnique({
       where: { id },
       include: {
         createdByUser: { select: { email: true, fullName: true } },
@@ -191,11 +200,11 @@ export class PrismaQuoteBatchesRepository {
     installationAmount?: number;
     lines?: LineInput[];
   }) {
-    const batch = await prismaClient.quoteBatch.findUnique({ where: { id } });
+    const batch = await this.prisma.quoteBatch.findUnique({ where: { id } });
     if (!batch) throw new Error("Cotización no encontrada.");
     if (batch.status !== QuoteBatchStatus.DRAFT) throw new Error("Solo se pueden editar cotizaciones en estado DRAFT.");
 
-    const user = await prismaClient.appUser.findUnique({ where: { email: updatedByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: updatedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
     const updateData: Record<string, unknown> = {};
@@ -218,7 +227,7 @@ export class PrismaQuoteBatchesRepository {
       updateData.taxAmount = tax;
       updateData.totalAmount = total;
 
-      await prismaClient.$transaction(async (tx) => {
+      await this.prisma.$transaction(async (tx) => {
         await tx.quoteBatchLine.deleteMany({ where: { quoteBatchId: id } });
         for (const line of resolvedLines) {
           await tx.quoteBatchLine.create({
@@ -233,6 +242,7 @@ export class PrismaQuoteBatchesRepository {
               priceMethod: line.priceMethod,
               categoryId: line.categoryId ?? null,
               lineNote: line.lineNote ?? null,
+              roomAreaName: line.roomAreaName?.trim() || null,
               displayOrder: line.displayOrder
             }
           });
@@ -240,10 +250,10 @@ export class PrismaQuoteBatchesRepository {
         await tx.quoteBatch.update({ where: { id }, data: updateData });
       });
     } else {
-      await prismaClient.quoteBatch.update({ where: { id }, data: updateData });
+      await this.prisma.quoteBatch.update({ where: { id }, data: updateData });
     }
 
-    await auditRepo.log({
+    await this.auditRepo.log({
       branchId: batch.branchId,
       actorUserId: user.id,
       entityType: "quote_batch",
@@ -257,14 +267,17 @@ export class PrismaQuoteBatchesRepository {
     const original = await this.findById(id);
     if (!original) throw new Error("Cotización no encontrada.");
 
-    const user = await prismaClient.appUser.findUnique({ where: { email: createdByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: createdByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
-    const newBatch = await prismaClient.$transaction(async (tx) => {
+    const newBatch = await this.prisma.$transaction(async (tx) => {
+      const quoteNumber = await getNextDocumentNumberTx(tx, original.branchId);
+
       const copy = await tx.quoteBatch.create({
         data: {
           branchId: original.branchId,
           createdBy: user.id,
+          quoteNumber,
           priceListId: original.priceListId,
           customerId: original.customerId,
           customerName: original.customerName,
@@ -292,6 +305,7 @@ export class PrismaQuoteBatchesRepository {
             priceMethod: line.priceMethod,
             categoryId: line.categoryId ?? null,
             lineNote: line.lineNote ?? null,
+            roomAreaName: line.roomAreaName ?? null,
             displayOrder: line.displayOrder
           }
         });
@@ -299,29 +313,29 @@ export class PrismaQuoteBatchesRepository {
       return copy;
     });
 
-    await auditRepo.log({
+    await this.auditRepo.log({
       branchId: original.branchId,
       actorUserId: user.id,
       entityType: "quote_batch",
       entityId: newBatch.id,
       action: AuditAction.CREATE,
-      afterJson: { duplicatedFrom: id, status: newBatch.status }
+      afterJson: { duplicatedFrom: id, status: newBatch.status, quoteNumber: newBatch.quoteNumber }
     });
 
     return newBatch;
   }
 
   async finalize(id: string, updatedByEmail: string) {
-    const batch = await prismaClient.quoteBatch.findUnique({ where: { id } });
+    const batch = await this.prisma.quoteBatch.findUnique({ where: { id } });
     if (!batch) throw new Error("Cotización no encontrada.");
     if (batch.status !== QuoteBatchStatus.DRAFT) throw new Error("Solo se pueden finalizar cotizaciones en estado DRAFT.");
 
-    const user = await prismaClient.appUser.findUnique({ where: { email: updatedByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: updatedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
-    await prismaClient.quoteBatch.update({ where: { id }, data: { status: QuoteBatchStatus.FINALIZED } });
+    await this.prisma.quoteBatch.update({ where: { id }, data: { status: QuoteBatchStatus.FINALIZED } });
 
-    await auditRepo.log({
+    await this.auditRepo.log({
       branchId: batch.branchId,
       actorUserId: user.id,
       entityType: "quote_batch",
@@ -333,16 +347,16 @@ export class PrismaQuoteBatchesRepository {
   }
 
   async cancel(id: string, updatedByEmail: string) {
-    const batch = await prismaClient.quoteBatch.findUnique({ where: { id } });
+    const batch = await this.prisma.quoteBatch.findUnique({ where: { id } });
     if (!batch) throw new Error("Cotización no encontrada.");
     if (batch.status !== QuoteBatchStatus.DRAFT) throw new Error("Solo se pueden anular cotizaciones en estado DRAFT.");
 
-    const user = await prismaClient.appUser.findUnique({ where: { email: updatedByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: updatedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
-    await prismaClient.quoteBatch.update({ where: { id }, data: { status: QuoteBatchStatus.CANCELED } });
+    await this.prisma.quoteBatch.update({ where: { id }, data: { status: QuoteBatchStatus.CANCELED } });
 
-    await auditRepo.log({
+    await this.auditRepo.log({
       branchId: batch.branchId,
       actorUserId: user.id,
       entityType: "quote_batch",
@@ -359,7 +373,7 @@ export class PrismaQuoteBatchesRepository {
 
     for (let i = 0; i < lines.length; i++) {
       const l = lines[i];
-      const sku = await prismaClient.fabricSku.findFirst({
+      const sku = await this.prisma.fabricSku.findFirst({
         where: { branchId, code: l.skuCode, isActive: true }
       });
       if (!sku) throw new Error(`SKU no encontrado: ${l.skuCode}`);
@@ -368,7 +382,7 @@ export class PrismaQuoteBatchesRepository {
       if (l.categoryId) {
         resolvedCategoryId = l.categoryId;
       } else if (l.categoryName) {
-        const cat = await categoriesRepo.findOrCreate({ branchId, name: l.categoryName, createdByEmail });
+        const cat = await this.categoriesRepo.findOrCreate({ branchId, name: l.categoryName, createdByEmail });
         resolvedCategoryId = cat.id;
       }
 
@@ -381,6 +395,26 @@ export class PrismaQuoteBatchesRepository {
     }
     return result;
   }
+}
+
+async function getNextDocumentNumberTx(
+  tx: Prisma.TransactionClient,
+  branchId: string
+) {
+  const [lastBatch, lastSale] = await Promise.all([
+    tx.quoteBatch.findFirst({
+      where: { branchId },
+      orderBy: { quoteNumber: "desc" },
+      select: { quoteNumber: true }
+    }),
+    tx.sale.findFirst({
+      where: { branchId },
+      orderBy: { quoteNumber: "desc" },
+      select: { quoteNumber: true }
+    })
+  ]);
+
+  return Math.max(lastBatch?.quoteNumber ?? 0, lastSale?.quoteNumber ?? 0) + 1;
 }
 
 function computeTotals(lineSubtotals: number[], commercialAdj = 0, installation = 0) {

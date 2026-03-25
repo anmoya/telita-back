@@ -1,6 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { AuditAction } from "@prisma/client";
-import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
+import { AuditAction, PrismaClient } from "@prisma/client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 import {
   DEFAULT_SCRAP_POLICY,
@@ -75,10 +74,13 @@ const DEFAULT_FLOW_RULES: FlowRules = { scrapRequiredAtStage: "AT_CUT" };
 
 @Injectable()
 export class PrismaSettingsRepository {
-  private readonly auditRepo = new PrismaAuditRepository();
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly auditRepo: PrismaAuditRepository
+  ) {}
 
   async getScrapPolicy(): Promise<ScrapPolicy> {
-    const setting = await prismaClient.systemSetting.findUnique({ where: { key: SCRAP_POLICY_KEY } });
+    const setting = await this.prisma.systemSetting.findUnique({ where: { key: SCRAP_POLICY_KEY } });
     if (setting) {
       return parseScrapPolicy(setting.valueJson);
     }
@@ -86,13 +88,13 @@ export class PrismaSettingsRepository {
   }
 
   async updateScrapPolicy(policy: ScrapPolicy, updatedByEmail: string): Promise<ScrapPolicy> {
-    const user = await prismaClient.appUser.findUnique({ where: { email: updatedByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: updatedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
-    const existing = await prismaClient.systemSetting.findUnique({ where: { key: SCRAP_POLICY_KEY } });
+    const existing = await this.prisma.systemSetting.findUnique({ where: { key: SCRAP_POLICY_KEY } });
     const normalized = parseScrapPolicy(policy);
 
-    await prismaClient.systemSetting.upsert({
+    await this.prisma.systemSetting.upsert({
       where: { key: SCRAP_POLICY_KEY },
       update: { valueJson: normalized, updatedBy: user.id, updatedAt: new Date() },
       create: { key: SCRAP_POLICY_KEY, valueJson: normalized, updatedBy: user.id, updatedAt: new Date() }
@@ -118,11 +120,11 @@ export class PrismaSettingsRepository {
   }
 
   async updateFlowRules(rules: FlowRules, updatedByEmail: string): Promise<FlowRules> {
-    const user = await prismaClient.appUser.findUnique({ where: { email: updatedByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: updatedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
-    const existing = await prismaClient.systemSetting.findUnique({ where: { key: FLOW_RULES_KEY } });
-    await prismaClient.systemSetting.upsert({
+    const existing = await this.prisma.systemSetting.findUnique({ where: { key: FLOW_RULES_KEY } });
+    await this.prisma.systemSetting.upsert({
       where: { key: FLOW_RULES_KEY },
       update: { valueJson: rules, updatedBy: user.id, updatedAt: new Date() },
       create: { key: FLOW_RULES_KEY, valueJson: rules, updatedBy: user.id, updatedAt: new Date() }
@@ -143,13 +145,13 @@ export class PrismaSettingsRepository {
   }
 
   async getCutScrapLookupPolicy(): Promise<CutScrapLookupPolicy> {
-    const setting = await prismaClient.systemSetting.findUnique({ where: { key: CUT_SCRAP_LOOKUP_POLICY_KEY } });
+    const setting = await this.prisma.systemSetting.findUnique({ where: { key: CUT_SCRAP_LOOKUP_POLICY_KEY } });
     if (!setting) return DEFAULT_CUT_SCRAP_LOOKUP_POLICY;
     return parseCutScrapLookupPolicy(setting.valueJson);
   }
 
   async updateCutScrapLookupPolicy(input: Partial<CutScrapLookupPolicy>, updatedByEmail: string): Promise<CutScrapLookupPolicy> {
-    const user = await prismaClient.appUser.findUnique({ where: { email: updatedByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: updatedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
     const current = await this.getCutScrapLookupPolicy();
@@ -160,8 +162,8 @@ export class PrismaSettingsRepository {
       maxSuggestionsPerLine: input.maxSuggestionsPerLine ?? current.maxSuggestionsPerLine
     });
 
-    const existing = await prismaClient.systemSetting.findUnique({ where: { key: CUT_SCRAP_LOOKUP_POLICY_KEY } });
-    await prismaClient.systemSetting.upsert({
+    const existing = await this.prisma.systemSetting.findUnique({ where: { key: CUT_SCRAP_LOOKUP_POLICY_KEY } });
+    await this.prisma.systemSetting.upsert({
       where: { key: CUT_SCRAP_LOOKUP_POLICY_KEY },
       update: { valueJson: updated, updatedBy: user.id, updatedAt: new Date() },
       create: { key: CUT_SCRAP_LOOKUP_POLICY_KEY, valueJson: updated, updatedBy: user.id, updatedAt: new Date() }
@@ -180,13 +182,13 @@ export class PrismaSettingsRepository {
   }
 
   async getSoftHoldPolicy(): Promise<SoftHoldPolicy> {
-    const setting = await prismaClient.systemSetting.findUnique({ where: { key: SOFT_HOLD_POLICY_KEY } });
+    const setting = await this.prisma.systemSetting.findUnique({ where: { key: SOFT_HOLD_POLICY_KEY } });
     if (!setting) return DEFAULT_SOFT_HOLD_POLICY;
     return parseSoftHoldPolicy(setting.valueJson);
   }
 
   async updateSoftHoldPolicy(input: Partial<SoftHoldPolicy>, updatedByEmail: string): Promise<SoftHoldPolicy> {
-    const user = await prismaClient.appUser.findUnique({ where: { email: updatedByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: updatedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
     const current = await this.getSoftHoldPolicy();
@@ -196,8 +198,8 @@ export class PrismaSettingsRepository {
       maxMinutes: input.maxMinutes ?? current.maxMinutes
     });
 
-    const existing = await prismaClient.systemSetting.findUnique({ where: { key: SOFT_HOLD_POLICY_KEY } });
-    await prismaClient.systemSetting.upsert({
+    const existing = await this.prisma.systemSetting.findUnique({ where: { key: SOFT_HOLD_POLICY_KEY } });
+    await this.prisma.systemSetting.upsert({
       where: { key: SOFT_HOLD_POLICY_KEY },
       update: { valueJson: updated, updatedBy: user.id, updatedAt: new Date() },
       create: { key: SOFT_HOLD_POLICY_KEY, valueJson: updated, updatedBy: user.id, updatedAt: new Date() }
@@ -216,13 +218,13 @@ export class PrismaSettingsRepository {
   }
 
   async getCutSheetPolicy(): Promise<CutSheetPolicy> {
-    const setting = await prismaClient.systemSetting.findUnique({ where: { key: CUT_SHEET_POLICY_KEY } });
+    const setting = await this.prisma.systemSetting.findUnique({ where: { key: CUT_SHEET_POLICY_KEY } });
     if (!setting) return DEFAULT_CUT_SHEET_POLICY;
     return parseCutSheetPolicy(setting.valueJson);
   }
 
   async updateCutSheetPolicy(input: Partial<CutSheetPolicy>, updatedByEmail: string): Promise<CutSheetPolicy> {
-    const user = await prismaClient.appUser.findUnique({ where: { email: updatedByEmail } });
+    const user = await this.prisma.appUser.findUnique({ where: { email: updatedByEmail } });
     if (!user) throw new Error("Usuario no encontrado.");
 
     const current = await this.getCutSheetPolicy();
@@ -230,8 +232,8 @@ export class PrismaSettingsRepository {
       mode: input.mode ?? current.mode
     });
 
-    const existing = await prismaClient.systemSetting.findUnique({ where: { key: CUT_SHEET_POLICY_KEY } });
-    await prismaClient.systemSetting.upsert({
+    const existing = await this.prisma.systemSetting.findUnique({ where: { key: CUT_SHEET_POLICY_KEY } });
+    await this.prisma.systemSetting.upsert({
       where: { key: CUT_SHEET_POLICY_KEY },
       update: { valueJson: updated, updatedBy: user.id, updatedAt: new Date() },
       create: { key: CUT_SHEET_POLICY_KEY, valueJson: updated, updatedBy: user.id, updatedAt: new Date() }
@@ -251,7 +253,7 @@ export class PrismaSettingsRepository {
 
   private async getLegacyDefaultScrapPolicy(): Promise<ScrapPolicy> {
     const widthThreshold = await this.resolveLegacyWidthThresholdCm();
-    const legacyFlowRules = await prismaClient.systemSetting.findUnique({ where: { key: FLOW_RULES_KEY } });
+    const legacyFlowRules = await this.prisma.systemSetting.findUnique({ where: { key: FLOW_RULES_KEY } });
     const parsedFlowRules = (legacyFlowRules?.valueJson ?? DEFAULT_FLOW_RULES) as Record<string, unknown>;
     const scrapRequiredAtStage = parsedFlowRules.scrapRequiredAtStage as ScrapRequiredAtStage | undefined;
     const locationPolicy: ScrapLocationPolicy =
@@ -260,7 +262,7 @@ export class PrismaSettingsRepository {
   }
 
   private async resolveLegacyWidthThresholdCm(): Promise<number> {
-    const explicit = await prismaClient.systemSetting.findUnique({ where: { key: "global_scrap_threshold_m2" } });
+    const explicit = await this.prisma.systemSetting.findUnique({ where: { key: "global_scrap_threshold_m2" } });
     const value = Number(explicit?.valueJson ?? 0);
     if (Number.isFinite(value) && value > 0) {
       const widthThresholdM = Math.sqrt(value);

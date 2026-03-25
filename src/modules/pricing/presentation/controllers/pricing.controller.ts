@@ -1,170 +1,72 @@
-import { BadRequestException, Body, Controller, Get, Headers, HttpCode, HttpStatus, Post, Query, UnprocessableEntityException } from "@nestjs/common";
-import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
-import { SystemClockService } from "../../../../shared/infrastructure/time/system-clock.service";
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query, UnprocessableEntityException } from "@nestjs/common";
+import type { AuthTokenPayload } from "../../../../shared/infrastructure/auth/token.service";
+import { Authenticated } from "../../../../shared/presentation/authenticated.decorator";
+import { CurrentAuth } from "../../../../shared/presentation/current-auth.decorator";
+import { BuildQuotePreviewUseCase } from "../../application/use-cases/build-quote-preview.use-case";
 import { CalculateQuoteBatchUseCase } from "../../application/use-cases/calculate-quote-batch.use-case";
 import { CalculateQuoteUseCase } from "../../application/use-cases/calculate-quote.use-case";
-import { PrismaPriceRepository } from "../../infrastructure/persistence/prisma/prisma-price.repository";
+import { ListQuotesUseCase } from "../../application/use-cases/list-quotes.use-case";
 import { CreateQuoteDto, PreviewRequestDto, QuoteBatchRequestDto } from "../dto/pricing.dto";
 
+@Authenticated("superadmin", "admin", "operador")
 @Controller("pricing")
 export class PricingController {
-  private readonly quoteUseCase: CalculateQuoteUseCase;
-  private readonly quoteBatchUseCase: CalculateQuoteBatchUseCase;
-
   constructor(
-    private readonly priceRepo: PrismaPriceRepository,
-    private readonly clock: SystemClockService
-  ) {
-    this.quoteUseCase = new CalculateQuoteUseCase(clock, priceRepo);
-    this.quoteBatchUseCase = new CalculateQuoteBatchUseCase(clock, priceRepo);
-  }
+    private readonly quoteUseCase: CalculateQuoteUseCase,
+    private readonly quoteBatchUseCase: CalculateQuoteBatchUseCase,
+    private readonly buildQuotePreviewUseCase: BuildQuotePreviewUseCase,
+    private readonly listQuotesUseCase: ListQuotesUseCase
+  ) {}
 
   @Post("quote")
   @HttpCode(HttpStatus.OK)
-  async quote(@Body() body: CreateQuoteDto, @Headers("authorization") authorization?: string) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const result = await this.quoteUseCase.execute({
-        ...body,
-        createdByEmail: auth.email
-      });
-      return result;
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+  async quote(@Body() body: CreateQuoteDto, @CurrentAuth() auth: AuthTokenPayload) {
+    return this.quoteUseCase.execute({
+      ...body,
+      createdByEmail: auth.email
+    });
   }
 
   @Post("quote-batch")
   @HttpCode(HttpStatus.OK)
   async quoteBatch(
     @Body() body: QuoteBatchRequestDto,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const result = await this.quoteBatchUseCase.execute({
-        branchCode: body.branchCode,
-        priceListName: body.priceListName,
-        createdByEmail: auth.email,
-        items: body.items
-      });
-      if (result.hasErrors) {
-        throw new UnprocessableEntityException(result);
-      }
-      return result;
-    } catch (error) {
-      if (error instanceof UnprocessableEntityException) throw error;
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
+    const result = await this.quoteBatchUseCase.execute({
+      branchCode: body.branchCode,
+      priceListName: body.priceListName,
+      createdByEmail: auth.email,
+      items: body.items
+    });
+    if (result.hasErrors) {
+      throw new UnprocessableEntityException(result);
     }
+    return result;
   }
 
   @Post("preview")
   @HttpCode(HttpStatus.OK)
   async preview(
     @Body() body: PreviewRequestDto,
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-
-    const batchInput = {
+    return this.buildQuotePreviewUseCase.execute({
+      mode: body.mode,
       branchCode: body.branchCode,
       priceListName: body.priceListName,
+      customerName: body.customerName,
+      customerReference: body.customerReference,
+      commercialAdjustmentPct: body.commercialAdjustmentPct,
+      installationAmount: body.installationAmount,
       createdByEmail: auth.email,
-      items: body.items.map((it, idx) => ({
-        clientItemId: String(idx),
-        skuCode: it.skuCode,
-        requestedWidthM: it.requestedWidthM,
-        requestedHeightM: it.requestedHeightM,
-        quantity: it.quantity,
-        description: it.description
-      }))
-    };
-
-    try {
-      const batch = await this.quoteBatchUseCase.execute(batchInput);
-
-      const branch = await this.priceRepo.getBranchSummaryByCode(body.branchCode);
-
-      const lines = body.items.map((it, idx) => {
-        const line = batch.lines[idx];
-        if (!line) return null;
-        if (!line.ok) return { index: idx, skuCode: it.skuCode, error: line.error };
-        return {
-          index: idx,
-          skuCode: it.skuCode,
-          description: it.description ?? it.skuCode,
-          categoryName: it.categoryName ?? null,
-          roomAreaName: it.roomAreaName ?? null,
-          requestedWidthM: it.requestedWidthM,
-          requestedHeightM: it.requestedHeightM,
-          quantity: it.quantity,
-          unitPrice: line.unitPrice,
-          subtotal: line.subtotal,
-          priceMethod: line.priceMethod,
-          ...(body.mode === "INTERNAL" ? { linearMeters: line.linearMeters } : {})
-        };
-      }).filter(Boolean);
-
-      const commercialAdjPct = Math.min(Math.max(body.commercialAdjustmentPct ?? 0, 0), 100);
-      const commercialAdj = Math.round(batch.subtotalAmount * (commercialAdjPct / 100) * 100) / 100;
-      const installation = Math.max(body.installationAmount ?? 0, 0);
-      const taxableSubtotal = batch.subtotalAmount + commercialAdj + installation;
-      const adjustedTax = Math.round(taxableSubtotal * 0.19 * 100) / 100;
-      const adjustedTotal = roundClpCash(taxableSubtotal + adjustedTax);
-
-      const result: Record<string, unknown> = {
-        header: {
-          branchName: branch?.name ?? body.branchCode,
-          date: new Date().toISOString(),
-          priceListName: body.priceListName
-        },
-        customer: {
-          name: body.customerName ?? null,
-          reference: body.customerReference ?? null
-        },
-        lines,
-        totals: {
-          subtotal: batch.subtotalAmount,
-          commercialAdjustmentPct: commercialAdjPct,
-          commercialAdjustmentAmount: commercialAdj,
-          installationAmount: installation,
-          tax: adjustedTax,
-          total: adjustedTotal,
-          currencyCode: batch.currencyCode
-        },
-        hasErrors: batch.hasErrors
-      };
-
-      if (body.mode === "INTERNAL") {
-        result.internalBreakdown = {
-          role: auth.role,
-          lineDetails: lines
-        };
-      }
-
-      return result;
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Error al generar preview");
-    }
+      actorRole: auth.role,
+      items: body.items
+    });
   }
 
   @Get("quotes")
-  async listQuotes(
-    @Query("branchCode") branchCode = "MAIN",
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    return this.priceRepo.listQuotes(branchCode);
+  async listQuotes(@Query("branchCode") branchCode = "MAIN") {
+    return this.listQuotesUseCase.execute(branchCode);
   }
-}
-
-function roundClpCash(value: number): number {
-  const integer = Math.round(value);
-  const remainder = integer % 10;
-  const base = integer - remainder;
-  return remainder <= 5 ? base : base + 10;
 }

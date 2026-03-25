@@ -1,5 +1,6 @@
-import { AuditAction } from "@prisma/client";
-import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
+import { Injectable } from "@nestjs/common";
+import { AuditAction, PrismaClient } from "@prisma/client";
+import { AppConflictError, AppNotFoundError, AppValidationError } from "../../../../../shared/application/errors/app-error";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 import { normalizeRut, validateRut } from "../../../../../shared/utils/rut";
 
@@ -16,11 +17,15 @@ export type CustomerPayload = {
   notes?: string | null;
 };
 
+@Injectable()
 export class PrismaCustomersRepository {
-  private readonly auditRepo = new PrismaAuditRepository();
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly auditRepo: PrismaAuditRepository
+  ) {}
 
   async list(params: { branchCode: string; q?: string; isActive?: boolean }) {
-    return prismaClient.customer.findMany({
+    return this.prisma.customer.findMany({
       where: {
         branch: { code: params.branchCode },
         isActive: params.isActive,
@@ -42,7 +47,7 @@ export class PrismaCustomersRepository {
   }
 
   async findById(id: string) {
-    return prismaClient.customer.findUnique({
+    return this.prisma.customer.findUnique({
       where: { id },
       include: {
         branch: { select: { code: true, name: true } },
@@ -52,15 +57,15 @@ export class PrismaCustomersRepository {
   }
 
   async create(input: CustomerPayload, actorUserId: string) {
-    const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
-    if (!branch) throw new Error("Sucursal no encontrada.");
+    const branch = await this.prisma.branch.findUnique({ where: { code: input.branchCode } });
+    if (!branch) throw new AppNotFoundError("Sucursal no encontrada.");
 
-    const preferredPriceListId = await resolvePreferredPriceListId(branch.id, input.preferredPriceListName);
+    const preferredPriceListId = await resolvePreferredPriceListId(this.prisma, branch.id, input.preferredPriceListName);
     const code = await this.getNextCustomerCode(branch.id);
 
     const normalizedRut = await this.resolveAndValidateRut(input.rut, branch.id);
 
-    const customer = await prismaClient.customer.create({
+    const customer = await this.prisma.customer.create({
       data: {
         branchId: branch.id,
         code,
@@ -96,19 +101,19 @@ export class PrismaCustomersRepository {
   }
 
   async update(id: string, input: Partial<Omit<CustomerPayload, "branchCode">>, actorUserId: string) {
-    const existing = await prismaClient.customer.findUnique({ where: { id } });
-    if (!existing) throw new Error("Cliente no encontrado.");
+    const existing = await this.prisma.customer.findUnique({ where: { id } });
+    if (!existing) throw new AppNotFoundError("Cliente no encontrado.");
 
     const preferredPriceListId =
       input.preferredPriceListName === undefined
         ? existing.preferredPriceListId
-        : await resolvePreferredPriceListId(existing.branchId, input.preferredPriceListName);
+        : await resolvePreferredPriceListId(this.prisma, existing.branchId, input.preferredPriceListName);
 
     const normalizedRut = input.rut !== undefined
       ? await this.resolveAndValidateRut(input.rut, existing.branchId, id)
       : undefined;
 
-    const customer = await prismaClient.customer.update({
+    const customer = await this.prisma.customer.update({
       where: { id },
       data: {
         rut: normalizedRut,
@@ -159,10 +164,10 @@ export class PrismaCustomersRepository {
   }
 
   async setStatus(id: string, isActive: boolean, actorUserId: string) {
-    const existing = await prismaClient.customer.findUnique({ where: { id } });
-    if (!existing) throw new Error("Cliente no encontrado.");
+    const existing = await this.prisma.customer.findUnique({ where: { id } });
+    if (!existing) throw new AppNotFoundError("Cliente no encontrado.");
 
-    const customer = await prismaClient.customer.update({
+    const customer = await this.prisma.customer.update({
       where: { id },
       data: { isActive }
     });
@@ -189,21 +194,21 @@ export class PrismaCustomersRepository {
 
     const normalized = normalizeRut(rut);
     if (!validateRut(normalized)) {
-      throw new Error("RUT inválido.");
+      throw new AppValidationError("RUT inválido.");
     }
 
-    const existing = await prismaClient.customer.findFirst({
+    const existing = await this.prisma.customer.findFirst({
       where: { branchId, rut: normalized, ...(excludeId ? { id: { not: excludeId } } : {}) }
     });
     if (existing) {
-      throw new Error("Ya existe un cliente con este RUT en esta sucursal.");
+      throw new AppConflictError("Ya existe un cliente con este RUT en esta sucursal.");
     }
 
     return normalized;
   }
 
   private async getNextCustomerCode(branchId: string): Promise<string> {
-    const last = await prismaClient.customer.findMany({
+    const last = await this.prisma.customer.findMany({
       where: { branchId, code: { startsWith: "CLI-" } },
       select: { code: true },
       orderBy: { createdAt: "desc" },
@@ -217,13 +222,13 @@ export class PrismaCustomersRepository {
   }
 }
 
-async function resolvePreferredPriceListId(branchId: string, preferredPriceListName?: string | null) {
+async function resolvePreferredPriceListId(prisma: PrismaClient, branchId: string, preferredPriceListName?: string | null) {
   if (!preferredPriceListName) return null;
-  const priceList = await prismaClient.priceList.findFirst({
+  const priceList = await prisma.priceList.findFirst({
     where: { branchId, name: preferredPriceListName, isActive: true },
     select: { id: true }
   });
-  if (!priceList) throw new Error("Lista de precios preferida no encontrada.");
+  if (!priceList) throw new AppNotFoundError("Lista de precios preferida no encontrada.");
   return priceList.id;
 }
 
@@ -240,7 +245,7 @@ function normalizeUpperNullable(value?: string | null) {
 function normalizeDiscount(value?: number) {
   const discount = Number(value ?? 0);
   if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
-    throw new Error("discountPct debe estar entre 0 y 100.");
+    throw new AppValidationError("discountPct debe estar entre 0 y 100.");
   }
   return discount;
 }

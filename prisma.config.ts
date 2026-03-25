@@ -1,10 +1,7 @@
-import { existsSync } from "node:fs";
-import { loadEnvFile } from "node:process";
 import { defineConfig } from "prisma/config";
+import { getRuntimeEnv } from "./src/shared/infrastructure/config/load-env";
 
-if (existsSync(".env")) {
-  loadEnvFile(".env");
-}
+getRuntimeEnv();
 
 export default defineConfig({
   schema: "prisma/schema.prisma",

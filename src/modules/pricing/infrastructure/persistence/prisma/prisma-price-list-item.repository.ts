@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { PrismaClient } from "@prisma/client";
+import { AppConflictError, AppNotFoundError } from "../../../../../shared/application/errors/app-error";
 import type { PriceListItemRepositoryPort } from "../../../application/ports/price-list-item-repository.port";
 
 @Injectable()
@@ -50,7 +51,7 @@ export class PrismaPriceListItemRepository implements PriceListItemRepositoryPor
       where: { code: params.skuCode, isActive: true },
       select: { id: true }
     });
-    if (!sku) throw new Error("SKU no encontrado o inactivo");
+    if (!sku) throw new AppNotFoundError("SKU no encontrado o inactivo");
 
     // Check for duplicate
     const existing = await this.prisma.priceListItem.findUnique({
@@ -58,7 +59,7 @@ export class PrismaPriceListItemRepository implements PriceListItemRepositoryPor
         priceListId_skuId: { priceListId: params.priceListId, skuId: sku.id }
       }
     });
-    if (existing) throw new Error("El SKU ya existe en esta lista de precios");
+    if (existing) throw new AppConflictError("El SKU ya existe en esta lista de precios");
 
     const item = await this.prisma.priceListItem.create({
       data: {

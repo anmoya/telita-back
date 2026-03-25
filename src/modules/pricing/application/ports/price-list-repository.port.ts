@@ -1,3 +1,5 @@
+export const PRICE_LIST_REPOSITORY = Symbol("PRICE_LIST_REPOSITORY");
+
 export interface PriceListRepositoryPort {
   getByBranchCode(branchCode: string): Promise<PriceListSummary[]>;
 

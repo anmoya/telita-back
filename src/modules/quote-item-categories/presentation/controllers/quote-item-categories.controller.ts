@@ -1,23 +1,29 @@
 import { BadRequestException, Body, Controller, Get, Param, Patch, Post, Query } from "@nestjs/common";
-import { Headers } from "@nestjs/common";
-import { PrismaQuoteItemCategoriesRepository } from "../../infrastructure/persistence/prisma/prisma-quote-item-categories.repository";
-import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
+import type { AuthTokenPayload } from "../../../../shared/infrastructure/auth/token.service";
+import { Authenticated } from "../../../../shared/presentation/authenticated.decorator";
+import { CurrentAuth } from "../../../../shared/presentation/current-auth.decorator";
+import { Roles } from "../../../../shared/presentation/roles.decorator";
+import { CreateQuoteItemCategoryUseCase } from "../../application/use-cases/create-quote-item-category.use-case";
+import { ListQuoteItemCategoriesUseCase } from "../../application/use-cases/list-quote-item-categories.use-case";
+import { UpdateQuoteItemCategoryUseCase } from "../../application/use-cases/update-quote-item-category.use-case";
 
+@Authenticated("superadmin", "admin", "operador")
 @Controller("quote-item-categories")
 export class QuoteItemCategoriesController {
-  private readonly repo = new PrismaQuoteItemCategoriesRepository();
+  constructor(
+    private readonly listQuoteItemCategoriesUseCase: ListQuoteItemCategoriesUseCase,
+    private readonly createQuoteItemCategoryUseCase: CreateQuoteItemCategoryUseCase,
+    private readonly updateQuoteItemCategoryUseCase: UpdateQuoteItemCategoryUseCase
+  ) {}
 
   @Get()
   async list(
     @Query("branchCode") branchCode = "MAIN",
-    @Query("isActive") isActive?: string,
-    @Headers("authorization") authorization?: string
+    @Query("isActive") isActive?: string
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     try {
       const isActiveFilter = isActive === undefined ? undefined : isActive === "true";
-      const categories = await this.repo.list({ branchCode, isActive: isActiveFilter });
+      const categories = await this.listQuoteItemCategoriesUseCase.execute({ branchCode, isActive: isActiveFilter });
       return categories.map((c) => ({
         id: c.id,
         name: c.name,
@@ -30,14 +36,13 @@ export class QuoteItemCategoriesController {
   }
 
   @Post()
+  @Roles("superadmin", "admin")
   async create(
     @Body() body: { branchCode: string; name: string },
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
     try {
-      const category = await this.repo.create({
+      const category = await this.createQuoteItemCategoryUseCase.execute({
         branchCode: body.branchCode,
         name: body.name,
         createdByEmail: auth.email
@@ -49,15 +54,14 @@ export class QuoteItemCategoriesController {
   }
 
   @Patch(":id")
+  @Roles("superadmin", "admin")
   async update(
     @Param("id") id: string,
     @Body() body: { name?: string; isActive?: boolean },
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin"]);
     try {
-      const category = await this.repo.update({
+      const category = await this.updateQuoteItemCategoryUseCase.execute({
         id,
         name: body.name,
         isActive: body.isActive,

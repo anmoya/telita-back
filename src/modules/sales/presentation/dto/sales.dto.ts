@@ -44,6 +44,10 @@ export class SaleQuoteItemDto {
 }
 
 export class CreateSaleFromQuoteDto {
+  @IsOptional()
+  @IsString()
+  quoteBatchId?: string;
+
   @IsString()
   branchCode!: string;
 

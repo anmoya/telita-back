@@ -1,3 +1,5 @@
+export const PRICE_LIST_ITEM_REPOSITORY = Symbol("PRICE_LIST_ITEM_REPOSITORY");
+
 export interface PriceListItemRepositoryPort {
   getByPriceListId(priceListId: string): Promise<PriceListItemDetail[]>;
 

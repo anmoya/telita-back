@@ -1,19 +1,35 @@
-export interface PriceRepositoryPort {
+export const QUOTE_REPOSITORY = Symbol("QUOTE_REPOSITORY");
+export const PRICE_CELL_REPOSITORY = Symbol("PRICE_CELL_REPOSITORY");
+
+export type QuoteContextResolution =
+  | {
+      ok: true;
+      branchId: string;
+      createdBy: string;
+      skuId: string;
+      priceListId: string;
+      currencyCode: string;
+      skuWidthM: number;
+      unitPrice: number;
+      discountPct: number;
+    }
+  | {
+      ok: false;
+      reason:
+        | "BRANCH_NOT_FOUND"
+        | "USER_NOT_FOUND"
+        | "SKU_NOT_FOUND"
+        | "PRICE_LIST_NOT_FOUND"
+        | "SKU_NOT_IN_PRICE_LIST";
+    };
+
+export interface QuoteRepositoryPort {
   getQuoteContext(params: {
     branchCode: string;
     createdByEmail: string;
     skuCode: string;
     priceListName: string;
-  }): Promise<{
-    branchId: string;
-    createdBy: string;
-    skuId: string;
-    priceListId: string;
-    currencyCode: string;
-    skuWidthM: number;
-    unitPrice: number;
-    discountPct: number; // from price_list_item
-  } | null>;
+  }): Promise<QuoteContextResolution>;
 
   saveQuote(params: {
     branchId: string;
@@ -46,7 +62,10 @@ export interface PriceRepositoryPort {
     }>
   >;
 
-  // Price list cell methods (SPEC-31)
+  getBranchSummaryByCode(branchCode: string): Promise<{ id: string; name: string } | null>;
+}
+
+export interface PriceCellRepositoryPort {
   getCellPrice(params: {
     priceListId: string;
     skuId: string;
@@ -68,6 +87,21 @@ export interface PriceRepositoryPort {
   createCell(params: {
     priceListId: string;
     skuId: string;
+    maxWidthM: number;
+    maxHeightM: number;
+    unitPrice: number;
+  }): Promise<{
+    id: string;
+    priceListId: string;
+    skuId: string;
+    maxWidthM: number;
+    maxHeightM: number;
+    unitPrice: number;
+  }>;
+
+  createCellBySkuCode(params: {
+    priceListId: string;
+    skuCode: string;
     maxWidthM: number;
     maxHeightM: number;
     unitPrice: number;

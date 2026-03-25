@@ -1,18 +1,16 @@
-import { BadRequestException, Body, Controller, Get, Headers, Param, Post, Query } from "@nestjs/common";
-import { PrismaSalesRepository } from "../../infrastructure/persistence/prisma/prisma-sales.repository";
-import { PrismaScrapsRepository } from "../../../scraps/infrastructure/persistence/prisma/prisma-scraps.repository";
-import { PrismaSettingsRepository } from "../../../settings/infrastructure/persistence/prisma/prisma-settings.repository";
-import { PrismaAuditRepository } from "../../../../shared/infrastructure/persistence/prisma-audit.repository";
-import { prismaClient } from "../../../../shared/infrastructure/persistence/prisma-client";
-import { requireAnyRole, requireAuth } from "../../../../shared/presentation/auth";
+import { BadRequestException, Body, Controller, Get, Param, Post, Query } from "@nestjs/common";
+import type { AuthTokenPayload } from "../../../../shared/infrastructure/auth/token.service";
+import { CutJobsWorkflowService } from "../../application/services/cut-jobs-workflow.service";
+import { SalesOperationsService } from "../../application/services/sales-operations.service";
+import { Authenticated } from "../../../../shared/presentation/authenticated.decorator";
+import { CurrentAuth } from "../../../../shared/presentation/current-auth.decorator";
 
+@Authenticated("superadmin", "admin", "operador")
 @Controller("cut-jobs")
 export class CutJobsController {
   constructor(
-    private readonly repo: PrismaSalesRepository,
-    private readonly scrapsRepo: PrismaScrapsRepository,
-    private readonly settingsRepo: PrismaSettingsRepository,
-    private readonly auditRepo: PrismaAuditRepository
+    private readonly salesOperations: SalesOperationsService,
+    private readonly workflow: CutJobsWorkflowService
   ) {}
 
   @Get()
@@ -22,13 +20,10 @@ export class CutJobsController {
     @Query("branchCode") branchCode = "MAIN",
     @Query("status") status?: string,
     @Query("page") page?: string,
-    @Query("limit") limit?: string,
-    @Headers("authorization") authorization?: string
+    @Query("limit") limit?: string
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
     const parsedStatus = parseCutJobStatus(status);
-    const result = await this.repo.listCutJobs({
+    const result = await this.salesOperations.listCutJobs({
       saleId,
       search,
       branchCode,
@@ -59,44 +54,11 @@ export class CutJobsController {
   }
 
   @Get(":cutJobId/compatible-scraps")
-  async compatibleScraps(
-    @Param("cutJobId") cutJobId: string,
-    @Headers("authorization") authorization?: string
-  ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const policy = await this.settingsRepo.getCutScrapLookupPolicy();
-      if (policy.mode === "OFF") {
-        return { policy, saleId: null, cutJobId, lines: [] };
-      }
-
-      const result = await this.scrapsRepo.matchForCutJob({
-        cutJobId,
-        scope: policy.scope,
-        maxPerLine: policy.maxSuggestionsPerLine
-      });
-
-      const user = await prismaClient.appUser.findUnique({ where: { email: auth.email } });
-      if (user) {
-        await this.auditRepo.log({
-          actorUserId: user.id,
-          entityType: "cut_job",
-          entityId: cutJobId,
-          action: "STATUS_CHANGE",
-          afterJson: {
-            event: "CUT_COMPATIBLE_SCRAPS_CHECKED",
-            suggestionsFound: result.lines.reduce((acc, l) => acc + l.suggestions.length, 0),
-            mode: policy.mode,
-            scope: policy.scope
-          }
-        });
-      }
-
-      return { policy, ...result };
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+  async compatibleScraps(@Param("cutJobId") cutJobId: string, @CurrentAuth() auth: AuthTokenPayload) {
+    return this.workflow.getCompatibleScraps({
+      cutJobId,
+      actorEmail: auth.email,
+    });
   }
 
   @Post(":cutJobId/mark-cut")
@@ -110,99 +72,13 @@ export class CutJobsController {
       locationCode?: string;
       pieceLocations?: Array<{ saleLinePieceId?: string; pieceIndex?: number; locationCode: string }>;
     },
-    @Headers("authorization") authorization?: string
+    @CurrentAuth() auth: AuthTokenPayload
   ) {
-    const auth = requireAuth(authorization);
-    requireAnyRole(auth, ["superadmin", "admin", "operador"]);
-    try {
-      const cutJob = await this.repo.markCut(cutJobId, auth.email);
-
-      const saleLine = cutJob.saleLine;
-      const sku = saleLine.sku;
-      const skuWidthM = Number(sku.widthValue) * Number(sku.widthUnit.toMeterFactor);
-      const pieces = saleLine.pieces.length > 0
-        ? saleLine.pieces
-        : Array.from({ length: saleLine.quantity }, (_, index) => ({
-            id: undefined,
-            pieceIndex: index + 1,
-            pieceTotal: saleLine.quantity,
-            requestedWidthM: saleLine.requestedWidthM,
-            requestedHeightM: saleLine.requestedHeightM,
-            roomAreaName: null
-          }));
-
-      const pieceIds = pieces.map((piece) => piece.id).filter((value): value is string => Boolean(value));
-      if (pieceIds.length > 0) {
-        await this.scrapsRepo.releaseSoftHoldsByCriteria({
-          releasedByEmail: auth.email,
-          saleLineId: saleLine.id,
-          saleLinePieceIds: pieceIds
-        });
-      }
-
-      const scrapPolicy = await this.settingsRepo.getScrapPolicy();
-      const defaultLocationCode = body.defaultLocationCode ?? body.locationCode;
-      const pieceLocations = new Map<string, string>();
-      for (const item of body.pieceLocations ?? []) {
-        if (item.saleLinePieceId) pieceLocations.set(item.saleLinePieceId, item.locationCode);
-        else if (typeof item.pieceIndex === "number") pieceLocations.set(`piece:${item.pieceIndex}`, item.locationCode);
-      }
-      const projections = pieces
-        .map((piece) => {
-          const defaultScrapWidthM = Math.max(skuWidthM - Number(piece.requestedWidthM), 0);
-          const defaultScrapHeightM = Math.max(Number(piece.requestedHeightM), 0);
-          const scrapWidthM = body.scrapWidthM ?? defaultScrapWidthM;
-          const scrapHeightM = body.scrapHeightM ?? defaultScrapHeightM;
-          return {
-            piece,
-            scrapWidthM,
-            scrapHeightM
-          };
-        })
-        .filter((projection) => projection.scrapWidthM > 0 && projection.scrapHeightM > 0);
-
-      const scraps = [];
-      for (const projection of projections) {
-        const locationCode =
-          (projection.piece.id ? pieceLocations.get(projection.piece.id) : undefined)
-          ?? pieceLocations.get(`piece:${projection.piece.pieceIndex}`)
-          ?? defaultLocationCode;
-
-        const scrap = await this.scrapsRepo.registerFromCutJob({
-          cutJobId: cutJob.id,
-          saleLineId: saleLine.id,
-          saleLinePieceId: projection.piece.id,
-          branchId: saleLine.sale.branchId,
-          skuId: sku.id,
-          scrapWidthM: projection.scrapWidthM,
-          scrapHeightM: projection.scrapHeightM,
-          generatedByEmail: auth.email,
-          locationPolicy: scrapPolicy.locationPolicy,
-          locationCode
-        });
-
-        scraps.push({
-          id: scrap.id,
-          status: scrap.status,
-          widthM: Number(scrap.widthM),
-          heightM: Number(scrap.heightM),
-          areaM2: Number(scrap.areaM2),
-          locationCode: locationCode ?? null,
-          isUseful: scrap.isUseful,
-          pieceIndex: projection.piece.pieceIndex,
-          pieceTotal: projection.piece.pieceTotal
-        });
-      }
-
-      return {
-        ok: true,
-        scrap: scraps[0] ?? null,
-        locationPolicy: scrapPolicy.locationPolicy,
-        scraps
-      };
-    } catch (error) {
-      throw new BadRequestException(error instanceof Error ? error.message : "Unexpected error");
-    }
+    return this.workflow.markCutAndRegisterScraps({
+      cutJobId,
+      actorEmail: auth.email,
+      ...body
+    });
   }
 }
 

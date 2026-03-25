@@ -1,5 +1,5 @@
-import { AuditAction } from "@prisma/client";
-import { prismaClient } from "../../../../../shared/infrastructure/persistence/prisma-client";
+import { Injectable } from "@nestjs/common";
+import { AuditAction, PrismaClient } from "@prisma/client";
 import { PrismaAuditRepository } from "../../../../../shared/infrastructure/persistence/prisma-audit.repository";
 
 export type CreateSkuInput = {
@@ -46,11 +46,15 @@ type SkuDto = {
   isActive: boolean;
 };
 
+@Injectable()
 export class PrismaCatalogRepository {
-  constructor(private readonly auditRepo: PrismaAuditRepository = new PrismaAuditRepository()) {}
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly auditRepo: PrismaAuditRepository
+  ) {}
 
   async listSkus(branchCode: string) {
-    return prismaClient.fabricSku.findMany({
+    return this.prisma.fabricSku.findMany({
       where: {
         branch: { code: branchCode },
         isActive: true
@@ -70,7 +74,7 @@ export class PrismaCatalogRepository {
   }
 
   async listAllSkus(branchCode: string): Promise<SkuDto[]> {
-    const skus = await prismaClient.fabricSku.findMany({
+    const skus = await this.prisma.fabricSku.findMany({
       where: {
         branch: { code: branchCode }
       },
@@ -102,8 +106,8 @@ export class PrismaCatalogRepository {
 
   async listUnits() {
     const [lengths, weights] = await Promise.all([
-      prismaClient.unitLength.findMany({ orderBy: { name: "asc" } }),
-      prismaClient.unitWeight.findMany({ orderBy: { name: "asc" } })
+      this.prisma.unitLength.findMany({ orderBy: { name: "asc" } }),
+      this.prisma.unitWeight.findMany({ orderBy: { name: "asc" } })
     ]);
 
     return {
@@ -113,19 +117,19 @@ export class PrismaCatalogRepository {
   }
 
   async createSku(input: CreateSkuInput, actorId: string): Promise<SkuDto> {
-    const branch = await prismaClient.branch.findUnique({ where: { code: input.branchCode } });
+    const branch = await this.prisma.branch.findUnique({ where: { code: input.branchCode } });
     if (!branch) throw new Error(`Sucursal no encontrada: ${input.branchCode}`);
 
-    const existingCode = await prismaClient.fabricSku.findUnique({
+    const existingCode = await this.prisma.fabricSku.findUnique({
       where: { branchId_code: { branchId: branch.id, code: input.code } }
     });
     if (existingCode) throw new Error(`Código SKU ya existe en esta sucursal: ${input.code}`);
 
     const [lengthUnit, widthUnit, thicknessUnit, weightUnit] = await Promise.all([
-      prismaClient.unitLength.findUnique({ where: { code: input.lengthUnitCode } }),
-      prismaClient.unitLength.findUnique({ where: { code: input.widthUnitCode } }),
-      prismaClient.unitLength.findUnique({ where: { code: input.thicknessUnitCode } }),
-      prismaClient.unitWeight.findUnique({ where: { code: input.weightUnitCode } })
+      this.prisma.unitLength.findUnique({ where: { code: input.lengthUnitCode } }),
+      this.prisma.unitLength.findUnique({ where: { code: input.widthUnitCode } }),
+      this.prisma.unitLength.findUnique({ where: { code: input.thicknessUnitCode } }),
+      this.prisma.unitWeight.findUnique({ where: { code: input.weightUnitCode } })
     ]);
 
     if (!lengthUnit) throw new Error(`Unidad de largo no encontrada: ${input.lengthUnitCode}`);
@@ -133,7 +137,7 @@ export class PrismaCatalogRepository {
     if (!thicknessUnit) throw new Error(`Unidad de espesor no encontrada: ${input.thicknessUnitCode}`);
     if (!weightUnit) throw new Error(`Unidad de peso no encontrada: ${input.weightUnitCode}`);
 
-    const sku = await prismaClient.fabricSku.create({
+    const sku = await this.prisma.fabricSku.create({
       data: {
         branchId: branch.id,
         code: input.code,
@@ -184,7 +188,7 @@ export class PrismaCatalogRepository {
   }
 
   async updateSku(id: string, input: UpdateSkuInput, actorId: string): Promise<SkuDto> {
-    const existing = await prismaClient.fabricSku.findUnique({
+    const existing = await this.prisma.fabricSku.findUnique({
       where: { id },
       include: {
         branch: { select: { id: true, code: true } },
@@ -221,7 +225,7 @@ export class PrismaCatalogRepository {
     } else {
       if (input.lengthValue !== undefined || input.lengthUnitCode) {
         const lengthUnit = input.lengthUnitCode
-          ? await prismaClient.unitLength.findUnique({ where: { code: input.lengthUnitCode }, select: { id: true } })
+          ? await this.prisma.unitLength.findUnique({ where: { code: input.lengthUnitCode }, select: { id: true } })
           : existing.lengthUnit;
         if (input.lengthUnitCode && !lengthUnit) throw new Error(`Unidad de largo no encontrada: ${input.lengthUnitCode}`);
         updateData.lengthValue = input.lengthValue ?? existing.lengthValue;
@@ -229,7 +233,7 @@ export class PrismaCatalogRepository {
       }
       if (input.widthValue !== undefined || input.widthUnitCode) {
         const widthUnit = input.widthUnitCode
-          ? await prismaClient.unitLength.findUnique({ where: { code: input.widthUnitCode }, select: { id: true } })
+          ? await this.prisma.unitLength.findUnique({ where: { code: input.widthUnitCode }, select: { id: true } })
           : existing.widthUnit;
         if (input.widthUnitCode && !widthUnit) throw new Error(`Unidad de ancho no encontrada: ${input.widthUnitCode}`);
         updateData.widthValue = input.widthValue ?? existing.widthValue;
@@ -237,7 +241,7 @@ export class PrismaCatalogRepository {
       }
       if (input.thicknessValue !== undefined || input.thicknessUnitCode) {
         const thicknessUnit = input.thicknessUnitCode
-          ? await prismaClient.unitLength.findUnique({ where: { code: input.thicknessUnitCode }, select: { id: true } })
+          ? await this.prisma.unitLength.findUnique({ where: { code: input.thicknessUnitCode }, select: { id: true } })
           : existing.thicknessUnit;
         if (input.thicknessUnitCode && !thicknessUnit)
           throw new Error(`Unidad de espesor no encontrada: ${input.thicknessUnitCode}`);
@@ -246,7 +250,7 @@ export class PrismaCatalogRepository {
       }
       if (input.weightValue !== undefined || input.weightUnitCode) {
         const weightUnit = input.weightUnitCode
-          ? await prismaClient.unitWeight.findUnique({ where: { code: input.weightUnitCode }, select: { id: true } })
+          ? await this.prisma.unitWeight.findUnique({ where: { code: input.weightUnitCode }, select: { id: true } })
           : existing.weightUnit;
         if (input.weightUnitCode && !weightUnit) throw new Error(`Unidad de peso no encontrada: ${input.weightUnitCode}`);
         updateData.weightValue = input.weightValue ?? existing.weightValue;
@@ -254,7 +258,7 @@ export class PrismaCatalogRepository {
       }
     }
 
-    const sku = await prismaClient.fabricSku.update({
+    const sku = await this.prisma.fabricSku.update({
       where: { id },
       data: updateData,
       include: {
@@ -293,7 +297,7 @@ export class PrismaCatalogRepository {
   }
 
   async setSkuStatus(id: string, isActive: boolean, actorId: string): Promise<SkuDto> {
-    const existing = await prismaClient.fabricSku.findUnique({
+    const existing = await this.prisma.fabricSku.findUnique({
       where: { id },
       include: {
         branch: { select: { id: true } },
@@ -306,7 +310,7 @@ export class PrismaCatalogRepository {
 
     if (!existing) throw new Error("SKU no encontrado.");
 
-    const sku = await prismaClient.fabricSku.update({
+    const sku = await this.prisma.fabricSku.update({
       where: { id },
       data: { isActive },
       include: {
